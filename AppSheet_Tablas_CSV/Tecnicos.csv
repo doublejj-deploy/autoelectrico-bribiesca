@@ -1,0 +1,4 @@
+ID_Tecnico,Nombre_Tecnico,Telefono,Especialidad,Email,Estado_Activo
+TEC-001,Hugo Bribiesca,5551112233,Diagnóstico Eléctrico y Marchas,hugo.bribiesca@autoelectrico.com,Activo
+TEC-002,Carlos Morales,5554445566,Alternadores y Sistema de Carga,carlos.m@autoelectrico.com,Activo
+TEC-003,Alejandro Soto,5557778899,"Cableado, Luces y Accesorios",alejandro.s@autoelectrico.com,Activo

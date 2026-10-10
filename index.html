@@ -1,0 +1,715 @@
+<!DOCTYPE html>
+<html lang="es" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Servicio Autoeléctrico Bribiesca - Sistema de Taller</title>
+  <meta name="description" content="Sistema de gestión integral para taller autoeléctrico: órdenes de servicio, diagnóstico de batería y alternador, inventario, clientes y WhatsApp.">
+  
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+  
+  <!-- Main Stylesheet -->
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app-container">
+    
+    <!-- Top Header Navigation -->
+    <header class="navbar" role="banner">
+      <div class="brand-wrapper">
+        <img src="logo hugo.jpeg" alt="Logo Servicio Autoeléctrico Bribiesca" class="brand-logo-img" id="app-logo">
+        <div class="brand-text">
+          <h1>
+            Autoeléctrico Bribiesca
+            <span class="brand-badge">⚡ PRO</span>
+          </h1>
+          <p class="brand-subtitle">Especialistas en Marchas, Alternadores y Diagnóstico</p>
+        </div>
+      </div>
+
+      <div class="nav-actions">
+        <div class="search-wrapper">
+          <span class="search-icon" aria-hidden="true">🔍</span>
+          <input type="search" id="global-search" class="search-input" placeholder="Buscar placa, cliente u orden..." aria-label="Búsqueda global">
+        </div>
+
+        <button type="button" class="btn btn-primary" id="btn-open-new-order">
+          <span aria-hidden="true">➕</span> Nueva Orden
+        </button>
+
+        <span id="db-status-badge" class="badge-count" style="background: rgba(16, 185, 129, 0.15); color: #34d399; border-color: #10b981; font-weight: 700; cursor: pointer;" title="Conectado a Base de Datos Central SQLite">
+          🟢 BD Central
+        </span>
+
+        <button type="button" class="btn btn-secondary btn-icon-only" id="btn-sync-excel" title="Sincronizar Base de Datos a archivo Excel (.xlsx)" aria-label="Sincronizar a Excel">
+          <span aria-hidden="true">📊</span>
+        </button>
+
+        <button type="button" class="btn btn-outline btn-icon-only" id="btn-toggle-theme" title="Cambiar tema claro/oscuro" aria-label="Cambiar tema">
+          <span id="theme-icon" aria-hidden="true">☀️</span>
+        </button>
+
+        <button type="button" class="btn btn-secondary btn-icon-only" id="btn-export-data" title="Exportar Respaldo JSON" aria-label="Respaldar datos">
+          <span aria-hidden="true">💾</span>
+        </button>
+      </div>
+    </header>
+
+    <!-- Navigation Tabs Bar -->
+    <nav class="nav-tabs-bar" role="navigation" aria-label="Módulos del taller">
+      <button type="button" class="tab-btn active" data-tab="dashboard" id="tab-dashboard">
+        <span aria-hidden="true">📊</span> Dashboard
+      </button>
+      <button type="button" class="tab-btn" data-tab="orders" id="tab-orders">
+        <span aria-hidden="true">🚗</span> Órdenes de Trabajo <span class="badge-count" id="badge-orders-count">0</span>
+      </button>
+      <button type="button" class="tab-btn" data-tab="inventory" id="tab-inventory">
+        <span aria-hidden="true">📦</span> Inventario <span class="badge-count" id="badge-inventory-count">0</span>
+      </button>
+      <button type="button" class="tab-btn" data-tab="services" id="tab-services">
+        <span aria-hidden="true">⚡</span> Catálogo Servicios
+      </button>
+      <button type="button" class="tab-btn" data-tab="clients" id="tab-clients">
+        <span aria-hidden="true">👥</span> Clientes y Vehículos
+      </button>
+      <button type="button" class="tab-btn" data-tab="diagnostics" id="tab-diagnostics">
+        <span aria-hidden="true">🔬</span> Asistente Eléctrico
+      </button>
+    </nav>
+
+    <!-- Main Content Area -->
+    <main class="main-content" role="main">
+
+      <!-- ==========================================
+           TAB 1: DASHBOARD
+           ========================================== -->
+      <section id="view-dashboard" class="view-section active">
+        <!-- KPIs -->
+        <div class="kpi-grid">
+          <article class="kpi-card" id="kpi-active-orders">
+            <div class="kpi-icon-box kpi-icon-blue" aria-hidden="true">⚡</div>
+            <div class="kpi-info">
+              <h3>En Taller Hoy</h3>
+              <p class="kpi-value" id="kpi-active-val">0</p>
+              <p class="kpi-meta">Vehículos activos</p>
+            </div>
+          </article>
+
+          <article class="kpi-card" id="kpi-ready-orders">
+            <div class="kpi-icon-box kpi-icon-green" aria-hidden="true">✅</div>
+            <div class="kpi-info">
+              <h3>Listos para Entrega</h3>
+              <p class="kpi-value" id="kpi-ready-val">0</p>
+              <p class="kpi-meta">Esperando cliente</p>
+            </div>
+          </article>
+
+          <article class="kpi-card" id="kpi-critical-stock">
+            <div class="kpi-icon-box kpi-icon-red" aria-hidden="true">🚨</div>
+            <div class="kpi-info">
+              <h3>Refacciones Bajas</h3>
+              <p class="kpi-value" id="kpi-stock-val">0</p>
+              <p class="kpi-meta">Por reabastecer</p>
+            </div>
+          </article>
+
+          <article class="kpi-card" id="kpi-pending-balance">
+            <div class="kpi-icon-box kpi-icon-amber" aria-hidden="true">💵</div>
+            <div class="kpi-info">
+              <h3>Saldos por Cobrar</h3>
+              <p class="kpi-value" id="kpi-pending-val">$0.00</p>
+              <p class="kpi-meta">Total pendiente</p>
+            </div>
+          </article>
+        </div>
+
+        <!-- Quick Access Dashboard Cards -->
+        <div class="action-bar">
+          <h2 class="section-title">
+            <span aria-hidden="true">📋</span> Órdenes Recientes y Urgentes
+          </h2>
+          <button type="button" class="btn btn-outline" id="btn-view-all-orders">Ver todas las órdenes ➔</button>
+        </div>
+
+        <div class="kanban-board" id="dashboard-recent-orders-container">
+          <!-- Rendered dynamically -->
+        </div>
+      </section>
+
+
+      <!-- ==========================================
+           TAB 2: ÓRDENES DE TRABAJO
+           ========================================== -->
+      <section id="view-orders" class="view-section">
+        <div class="action-bar">
+          <div>
+            <h2 class="section-title">
+              <span aria-hidden="true">🚗</span> Control de Órdenes de Servicio
+            </h2>
+          </div>
+
+          <div class="filter-group">
+            <label for="filter-order-status" class="visually-hidden">Estado:</label>
+            <select id="filter-order-status" class="form-control" aria-label="Filtrar por estado">
+              <option value="ALL">Todos los Estados</option>
+              <option value="Recepcionado">Recepcionado</option>
+              <option value="En Diagnóstico">En Diagnóstico</option>
+              <option value="En Reparación">En Reparación</option>
+              <option value="Listo para Entrega">Listo para Entrega</option>
+              <option value="Entregado">Entregado</option>
+            </select>
+
+            <button type="button" class="btn btn-primary" id="btn-create-order-tab">
+              <span aria-hidden="true">➕</span> Nueva Orden
+            </button>
+          </div>
+        </div>
+
+        <!-- Kanban Board View -->
+        <div class="kanban-board" id="orders-kanban-board">
+          <!-- Column: Recepcionado & Diagnóstico -->
+          <div class="kanban-col" id="col-recep-diag">
+            <div class="kanban-col-header">
+              <span class="kanban-col-title" style="color: #60a5fa;">📥 Recepción y Diagnóstico</span>
+              <span class="badge-count" id="count-col-diag">0</span>
+            </div>
+            <div class="kanban-cards-container" id="cards-col-diag"></div>
+          </div>
+
+          <!-- Column: En Reparación -->
+          <div class="kanban-col" id="col-reparacion">
+            <div class="kanban-col-header">
+              <span class="kanban-col-title" style="color: #c084fc;">🔧 En Reparación</span>
+              <span class="badge-count" id="count-col-rep">0</span>
+            </div>
+            <div class="kanban-cards-container" id="cards-col-rep"></div>
+          </div>
+
+          <!-- Column: Listo para Entrega -->
+          <div class="kanban-col" id="col-listo">
+            <div class="kanban-col-header">
+              <span class="kanban-col-title" style="color: #34d399;">✅ Listo para Entrega</span>
+              <span class="badge-count" id="count-col-listo">0</span>
+            </div>
+            <div class="kanban-cards-container" id="cards-col-listo"></div>
+          </div>
+
+          <!-- Column: Entregado & Facturado -->
+          <div class="kanban-col" id="col-entregado">
+            <div class="kanban-col-header">
+              <span class="kanban-col-title" style="color: #94a3b8;">🏁 Entregados</span>
+              <span class="badge-count" id="count-col-entregado">0</span>
+            </div>
+            <div class="kanban-cards-container" id="cards-col-entregado"></div>
+          </div>
+        </div>
+      </section>
+
+
+      <!-- ==========================================
+           TAB 3: INVENTARIO DE REFACCIONES
+           ========================================== -->
+      <section id="view-inventory" class="view-section">
+        <div class="action-bar">
+          <h2 class="section-title">
+            <span aria-hidden="true">📦</span> Almacén y Refacciones Eléctricas
+          </h2>
+          <div class="filter-group">
+            <input type="search" id="inventory-search" class="form-control" placeholder="Buscar pieza, marca o código..." aria-label="Buscar refacción">
+            <button type="button" class="btn btn-primary" id="btn-open-new-part">
+              <span aria-hidden="true">➕</span> Nueva Refacción
+            </button>
+          </div>
+        </div>
+
+        <div class="table-card">
+          <div class="table-responsive">
+            <table class="data-table" id="inventory-table">
+              <thead>
+                <tr>
+                  <th scope="col">ID</th>
+                  <th scope="col">Refacción</th>
+                  <th scope="col">Categoría</th>
+                  <th scope="col">Marca</th>
+                  <th scope="col">Ubicación</th>
+                  <th scope="col">Stock Actual</th>
+                  <th scope="col">Precio Costo</th>
+                  <th scope="col">Precio Venta</th>
+                  <th scope="col">Estado</th>
+                  <th scope="col">Ajuste Rápido</th>
+                </tr>
+              </thead>
+              <tbody id="inventory-table-body">
+                <!-- Injected via JavaScript -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+
+      <!-- ==========================================
+           TAB 4: CATÁLOGO DE SERVICIOS
+           ========================================== -->
+      <section id="view-services" class="view-section">
+        <div class="action-bar">
+          <h2 class="section-title">
+            <span aria-hidden="true">⚡</span> Catálogo de Mano de Obra y Servicios
+          </h2>
+          <button type="button" class="btn btn-primary" id="btn-open-new-service">
+            <span aria-hidden="true">➕</span> Nuevo Servicio
+          </button>
+        </div>
+
+        <div class="table-card">
+          <div class="table-responsive">
+            <table class="data-table" id="services-table">
+              <thead>
+                <tr>
+                  <th scope="col">Código</th>
+                  <th scope="col">Categoría</th>
+                  <th scope="col">Nombre del Servicio</th>
+                  <th scope="col">Descripción</th>
+                  <th scope="col">Tiempo Est.</th>
+                  <th scope="col">Precio Sugerido</th>
+                  <th scope="col">Acción</th>
+                </tr>
+              </thead>
+              <tbody id="services-table-body">
+                <!-- Injected via JS -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+
+      <!-- ==========================================
+           TAB 5: CLIENTES Y VEHÍCULOS
+           ========================================== -->
+      <section id="view-clients" class="view-section">
+        <div class="action-bar">
+          <h2 class="section-title">
+            <span aria-hidden="true">👥</span> Directorio de Clientes y Vehículos
+          </h2>
+          <div class="filter-group">
+            <input type="search" id="clients-search" class="form-control" placeholder="Buscar cliente o placa..." aria-label="Buscar cliente">
+            <button type="button" class="btn btn-primary" id="btn-open-new-client">
+              <span aria-hidden="true">➕</span> Nuevo Cliente
+            </button>
+          </div>
+        </div>
+
+        <div class="table-card">
+          <div class="table-responsive">
+            <table class="data-table" id="clients-table">
+              <thead>
+                <tr>
+                  <th scope="col">ID</th>
+                  <th scope="col">Nombre Completo</th>
+                  <th scope="col">Teléfono</th>
+                  <th scope="col">Email</th>
+                  <th scope="col">Vehículos Registrados</th>
+                  <th scope="col">Acciones</th>
+                </tr>
+              </thead>
+              <tbody id="clients-table-body">
+                <!-- Injected via JS -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+
+      <!-- ==========================================
+           TAB 6: ASISTENTE DE DIAGNÓSTICO ELÉCTRICO
+           ========================================== -->
+      <section id="view-diagnostics" class="view-section">
+        <div class="action-bar">
+          <h2 class="section-title">
+            <span aria-hidden="true">🔬</span> Asistente Técnico y Calculadora Eléctrica
+          </h2>
+        </div>
+
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1.5rem;">
+          
+          <!-- Test de Batería -->
+          <div class="diag-card">
+            <h3 style="display: flex; align-items: center; gap: 0.5rem; color: var(--accent-electric); margin-bottom: 0.75rem;">
+              <span aria-hidden="true">🔋</span> Probador Rápido de Batería (Motor Apagado)
+            </h3>
+            <p style="font-size: 0.82rem; color: var(--text-secondary); margin-bottom: 1rem;">
+              Ingresa el voltaje medido en bornes con multímetro digital tras 30 min de reposo.
+            </p>
+            <div class="form-group" style="margin-bottom: 0.75rem;">
+              <label for="diag-battery-input" class="form-label">Voltaje medido (Volts DC):</label>
+              <input type="number" id="diag-battery-input" class="form-control" step="0.1" value="12.6" min="8" max="16">
+            </div>
+            <div class="voltage-bar">
+              <div id="diag-battery-fill" class="voltage-fill" style="width: 100%; background: #10b981;"></div>
+            </div>
+            <div id="diag-battery-result" style="font-weight: 700; margin-top: 0.5rem; font-size: 0.9rem; color: #10b981;">
+              ✅ 100% Carga (12.6V - 12.8V): Batería en Excelente Estado
+            </div>
+          </div>
+
+          <!-- Test de Alternador -->
+          <div class="diag-card">
+            <h3 style="display: flex; align-items: center; gap: 0.5rem; color: var(--accent-amber); margin-bottom: 0.75rem;">
+              <span aria-hidden="true">⚙️</span> Probador de Alternador (Motor a 2,000 RPM)
+            </h3>
+            <p style="font-size: 0.82rem; color: var(--text-secondary); margin-bottom: 1rem;">
+              Mide el voltaje de carga con luces altas y aire acondicionado encendidos.
+            </p>
+            <div class="form-group" style="margin-bottom: 0.75rem;">
+              <label for="diag-alt-input" class="form-label">Voltaje del Alternador (Volts):</label>
+              <input type="number" id="diag-alt-input" class="form-control" step="0.1" value="14.2" min="10" max="18">
+            </div>
+            <div class="voltage-bar">
+              <div id="diag-alt-fill" class="voltage-fill" style="width: 80%; background: #10b981;"></div>
+            </div>
+            <div id="diag-alt-result" style="font-weight: 700; margin-top: 0.5rem; font-size: 0.9rem; color: #10b981;">
+              ✅ Sistema de Carga Normal (13.8V - 14.5V)
+            </div>
+          </div>
+
+          <!-- Escáner OBD-II Códigos Frecuentes -->
+          <div class="diag-card" style="grid-column: 1 / -1;">
+            <h3 style="color: var(--accent-purple); margin-bottom: 0.5rem;">
+              <span aria-hidden="true">📟</span> Diccionario Rápido de Códigos Eléctricos OBD-II
+            </h3>
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 0.75rem; margin-top: 1rem;">
+              <div class="symptom-box" style="border-left-color: #38bdf8;">
+                <strong>P0562</strong>: Voltaje del Sistema Bajo (Alternador no carga o batería agotada).
+              </div>
+              <div class="symptom-box" style="border-left-color: #ef4444;">
+                <strong>P0563</strong>: Voltaje del Sistema Alto (Regulador de voltaje en corto, peligro de quemar ECU).
+              </div>
+              <div class="symptom-box" style="border-left-color: #f59e0b;">
+                <strong>P0615</strong>: Circuito del Relé de Marcha (Relé pegado, arnés roto o solenoide dañado).
+              </div>
+              <div class="symptom-box" style="border-left-color: #10b981;">
+                <strong>P0620</strong>: Circuito de Control del Alternador (Señal de excitación o computadora dañada).
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </section>
+
+    </main>
+  </div>
+
+
+  <!-- ==========================================
+       MODAL 1: NUEVA ORDEN / EDITAR ORDEN
+       ========================================== -->
+  <div class="modal-overlay" id="modal-order" role="dialog" aria-modal="true" aria-labelledby="modal-order-title">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2 class="modal-title" id="modal-order-title">
+          <span>⚡</span> <span id="modal-order-mode">Nueva Orden de Recepción</span>
+        </h2>
+        <button type="button" class="modal-close-btn" id="btn-close-modal-order" aria-label="Cerrar modal">&times;</button>
+      </div>
+
+      <form id="form-order">
+        <div class="modal-body">
+          <input type="hidden" id="order-edit-id">
+
+          <!-- Sección 1: Vehículo y Cliente -->
+          <h3 style="font-size: 0.95rem; color: var(--accent-electric); margin-bottom: 0.75rem;">1. Vehículo y Propietario</h3>
+          <div class="form-grid">
+            <div class="form-group">
+              <label for="order-vehiculo-select" class="form-label">Vehículo / Placa *</label>
+              <select id="order-vehiculo-select" class="form-control" required>
+                <!-- Filled dynamically -->
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="order-tecnico-select" class="form-label">Técnico Asignado *</label>
+              <select id="order-tecnico-select" class="form-control" required>
+                <!-- Filled dynamically -->
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="order-estado-select" class="form-label">Estado de la Orden</label>
+              <select id="order-estado-select" class="form-control">
+                <option value="Recepcionado">Recepcionado</option>
+                <option value="En Diagnóstico">En Diagnóstico</option>
+                <option value="En Reparación">En Reparación</option>
+                <option value="Listo para Entrega">Listo para Entrega</option>
+                <option value="Entregado">Entregado</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="order-km" class="form-label">Kilometraje</label>
+              <input type="number" id="order-km" class="form-control" placeholder="Ej: 85000">
+            </div>
+          </div>
+
+          <!-- Sección 2: Checklist Eléctrico -->
+          <div class="inspection-box">
+            <h3 class="inspection-box-title">
+              <span>🔋</span> 2. Inspección Inicial del Sistema Eléctrico
+            </h3>
+            <div class="form-grid">
+              <div class="form-group">
+                <label for="order-volt-bat" class="form-label">Voltaje Batería (Reposo):</label>
+                <input type="number" step="0.1" id="order-volt-bat" class="form-control" placeholder="Ej: 12.4">
+              </div>
+              <div class="form-group">
+                <label for="order-volt-alt" class="form-label">Voltaje Alternador (Carga):</label>
+                <input type="number" step="0.1" id="order-volt-alt" class="form-control" placeholder="Ej: 14.2">
+              </div>
+              <div class="form-group">
+                <label for="order-marcha-select" class="form-label">Prueba de Marcha:</label>
+                <select id="order-marcha-select" class="form-control">
+                  <option value="Normal">Normal</option>
+                  <option value="Lento por baja carga">Lento por baja carga</option>
+                  <option value="No da marcha, hace clic clic">No da marcha, hace clic clic</option>
+                  <option value="Bendix patina">Bendix patina</option>
+                  <option value="Sin respuesta">Sin respuesta</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label for="order-obd2" class="form-label">Códigos OBD-II:</label>
+                <input type="text" id="order-obd2" class="form-control" placeholder="Ej: P0562, P0615">
+              </div>
+            </div>
+          </div>
+
+          <!-- Sección 3: Falla y Diagnóstico -->
+          <h3 style="font-size: 0.95rem; color: var(--accent-electric); margin-bottom: 0.75rem;">3. Síntomas y Diagnóstico</h3>
+          <div class="form-grid">
+            <div class="form-group full-width">
+              <label for="order-falla" class="form-label">Falla reportada por el cliente *</label>
+              <textarea id="order-falla" class="form-control" rows="2" placeholder="Describe los síntomas que menciona el cliente..." required></textarea>
+            </div>
+            <div class="form-group full-width">
+              <label for="order-diag" class="form-label">Diagnóstico del Técnico y Solución</label>
+              <textarea id="order-diag" class="form-control" rows="2" placeholder="Diagnóstico tras pruebas con multímetro/escáner..."></textarea>
+            </div>
+          </div>
+
+          <!-- Sección 4: Presupuesto y Cobro -->
+          <h3 style="font-size: 0.95rem; color: var(--accent-electric); margin-bottom: 0.75rem;">4. Presupuesto y Cobro</h3>
+          <div class="form-grid">
+            <div class="form-group">
+              <label for="order-mano-obra" class="form-label">Total Mano de Obra ($):</label>
+              <input type="number" step="0.01" id="order-mano-obra" class="form-control" value="0.00">
+            </div>
+            <div class="form-group">
+              <label for="order-refacciones-cost" class="form-label">Total Refacciones ($):</label>
+              <input type="number" step="0.01" id="order-refacciones-cost" class="form-control" value="0.00">
+            </div>
+            <div class="form-group">
+              <label for="order-anticipo" class="form-label">Anticipo recibido ($):</label>
+              <input type="number" step="0.01" id="order-anticipo" class="form-control" value="0.00">
+            </div>
+            <div class="form-group">
+              <label for="order-metodo-pago" class="form-label">Método de Pago:</label>
+              <select id="order-metodo-pago" class="form-control">
+                <option value="Efectivo">Efectivo</option>
+                <option value="Transferencia">Transferencia SPEI</option>
+                <option value="Tarjeta">Tarjeta Débito/Crédito</option>
+                <option value="Pendiente">Pendiente</option>
+              </select>
+            </div>
+          </div>
+
+          <!-- Sección 5: Firma Digital -->
+          <div class="form-group full-width" style="margin-top: 1rem;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.35rem;">
+              <label class="form-label">Firma de Conformidad del Cliente:</label>
+              <button type="button" class="btn btn-outline" style="padding: 0.2rem 0.6rem; font-size: 0.75rem;" id="btn-clear-canvas">Limpiar Firma</button>
+            </div>
+            <div class="signature-wrapper">
+              <span class="signature-hint" id="sig-hint">Firme aquí con el dedo o mouse</span>
+              <canvas id="signature-canvas" class="signature-canvas"></canvas>
+            </div>
+          </div>
+
+        </div>
+
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" id="btn-cancel-order">Cancelar</button>
+          <button type="submit" class="btn btn-primary" id="btn-save-order">Guardar Orden</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+
+  <!-- ==========================================
+       MODAL 2: TICKET / ORDEN IMPRIMIBLE
+       ========================================== -->
+  <div class="modal-overlay" id="modal-receipt" role="dialog" aria-modal="true" aria-labelledby="receipt-title">
+    <div class="modal-content" style="max-width: 680px;">
+      <div class="modal-header no-print">
+        <h2 class="modal-title" id="receipt-title">
+          <span>📄</span> Comprobante y Orden de Servicio
+        </h2>
+        <button type="button" class="modal-close-btn" id="btn-close-receipt">&times;</button>
+      </div>
+
+      <div class="modal-body" id="printable-receipt">
+        <!-- Receipt Content Injected via JS -->
+      </div>
+
+      <div class="modal-footer no-print">
+        <button type="button" class="btn btn-secondary" id="btn-close-receipt-btn">Cerrar</button>
+        <button type="button" class="btn btn-whatsapp" id="btn-receipt-whatsapp">
+          <span>💬</span> Enviar por WhatsApp
+        </button>
+        <button type="button" class="btn btn-primary" id="btn-print-receipt">
+          <span>🖨️</span> Imprimir Ticket
+        </button>
+      </div>
+    </div>
+  </div>
+
+
+  <!-- ==========================================
+       MODAL 3: NUEVO CLIENTE & VEHÍCULO
+       ========================================== -->
+  <div class="modal-overlay" id="modal-client" role="dialog" aria-modal="true" aria-labelledby="modal-client-title">
+    <div class="modal-content" style="max-width: 600px;">
+      <div class="modal-header">
+        <h2 class="modal-title" id="modal-client-title">
+          <span>👤</span> Registrar Nuevo Cliente y Vehículo
+        </h2>
+        <button type="button" class="modal-close-btn" id="btn-close-client-modal">&times;</button>
+      </div>
+
+      <form id="form-client">
+        <div class="modal-body">
+          <h3 style="font-size: 0.9rem; color: var(--accent-electric); margin-bottom: 0.5rem;">Datos del Cliente</h3>
+          <div class="form-grid">
+            <div class="form-group full-width">
+              <label for="client-name" class="form-label">Nombre Completo *</label>
+              <input type="text" id="client-name" class="form-control" placeholder="Ej: Pedro Mendoza" required>
+            </div>
+            <div class="form-group">
+              <label for="client-phone" class="form-label">Teléfono / WhatsApp *</label>
+              <input type="tel" id="client-phone" class="form-control" placeholder="10 dígitos (ej: 5551234567)" required>
+            </div>
+            <div class="form-group">
+              <label for="client-email" class="form-label">Correo Electrónico</label>
+              <input type="email" id="client-email" class="form-control" placeholder="correo@ejemplo.com">
+            </div>
+          </div>
+
+          <h3 style="font-size: 0.9rem; color: var(--accent-amber); margin: 1rem 0 0.5rem;">Datos del Vehículo</h3>
+          <div class="form-grid">
+            <div class="form-group">
+              <label for="veh-marca" class="form-label">Marca *</label>
+              <input type="text" id="veh-marca" class="form-control" placeholder="Ej: Nissan, Ford, Chevrolet" required>
+            </div>
+            <div class="form-group">
+              <label for="veh-modelo" class="form-label">Modelo *</label>
+              <input type="text" id="veh-modelo" class="form-control" placeholder="Ej: Versa, Ranger" required>
+            </div>
+            <div class="form-group">
+              <label for="veh-anio" class="form-label">Año</label>
+              <input type="number" id="veh-anio" class="form-control" placeholder="Ej: 2019" min="1970" max="2030">
+            </div>
+            <div class="form-group">
+              <label for="veh-placa" class="form-label">Placa *</label>
+              <input type="text" id="veh-placa" class="form-control" placeholder="Ej: ABC-123-A" required>
+            </div>
+            <div class="form-group">
+              <label for="veh-color" class="form-label">Color</label>
+              <input type="text" id="veh-color" class="form-control" placeholder="Ej: Gris Plata">
+            </div>
+          </div>
+        </div>
+
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" id="btn-cancel-client">Cancelar</button>
+          <button type="submit" class="btn btn-primary">Registrar Cliente</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+
+  <!-- ==========================================
+       MODAL 4: NUEVA REFACCIÓN
+       ========================================== -->
+  <div class="modal-overlay" id="modal-part" role="dialog" aria-modal="true" aria-labelledby="modal-part-title">
+    <div class="modal-content" style="max-width: 550px;">
+      <div class="modal-header">
+        <h2 class="modal-title" id="modal-part-title">
+          <span>📦</span> Registrar Refacción en Inventario
+        </h2>
+        <button type="button" class="modal-close-btn" id="btn-close-part-modal">&times;</button>
+      </div>
+
+      <form id="form-part">
+        <div class="modal-body">
+          <div class="form-grid">
+            <div class="form-group full-width">
+              <label for="part-name" class="form-label">Nombre de la Pieza *</label>
+              <input type="text" id="part-name" class="form-control" placeholder="Ej: Batería LTH 12V 550A" required>
+            </div>
+            <div class="form-group">
+              <label for="part-cat" class="form-label">Categoría *</label>
+              <select id="part-cat" class="form-control">
+                <option value="Baterías">Baterías</option>
+                <option value="Alternadores">Alternadores</option>
+                <option value="Marchas">Marchas</option>
+                <option value="Relevadores">Relevadores</option>
+                <option value="Iluminación">Iluminación</option>
+                <option value="Fusibles">Fusibles</option>
+                <option value="Accesorios">Accesorios</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="part-marca" class="form-label">Marca</label>
+              <input type="text" id="part-marca" class="form-control" placeholder="Bosch, LTH, Hella...">
+            </div>
+            <div class="form-group">
+              <label for="part-stock" class="form-label">Stock Inicial *</label>
+              <input type="number" id="part-stock" class="form-control" value="5" min="0" required>
+            </div>
+            <div class="form-group">
+              <label for="part-min" class="form-label">Stock Mínimo (Alerta) *</label>
+              <input type="number" id="part-min" class="form-control" value="2" min="1" required>
+            </div>
+            <div class="form-group">
+              <label for="part-costo" class="form-label">Precio Costo ($)</label>
+              <input type="number" step="0.01" id="part-costo" class="form-control" value="0.00">
+            </div>
+            <div class="form-group">
+              <label for="part-venta" class="form-label">Precio Venta ($) *</label>
+              <input type="number" step="0.01" id="part-venta" class="form-control" value="0.00" required>
+            </div>
+            <div class="form-group full-width">
+              <label for="part-ubi" class="form-label">Ubicación en Almacén</label>
+              <input type="text" id="part-ubi" class="form-control" placeholder="Ej: Estante A-2, Gaveta 4">
+            </div>
+          </div>
+        </div>
+
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" id="btn-cancel-part">Cancelar</button>
+          <button type="submit" class="btn btn-primary">Guardar en Almacén</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+
+  <!-- Toast Notifications Container -->
+  <div class="toast-container" id="toast-container" aria-live="polite"></div>
+
+  <!-- Scripts -->
+  <script src="data.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

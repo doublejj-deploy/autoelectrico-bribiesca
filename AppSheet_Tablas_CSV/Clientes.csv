@@ -1,0 +1,4 @@
+ID_Cliente,Nombre_Completo,Telefono,Email,Direccion,RFC_Facturacion,Fecha_Registro,Notas
+CLI-001,Juan Pérez Gómez,5551234567,juan.perez@email.com,"Av. Hidalgo 123, Centro",PEGJ800101AA1,2026-10-01,Cliente frecuente
+CLI-002,María Elena Torres,5559876543,m.torres@email.com,"Calle Morelos 45, Col. Juárez",TOEM850512BB2,2026-10-03,Factura requerida
+CLI-003,Roberto Carlos Ruiz,5555551212,rruiz@email.com,Blv. Las Torres 789,,2026-10-05,Recomendado por Taller Morales

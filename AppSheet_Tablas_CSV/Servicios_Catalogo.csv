@@ -1,0 +1,8 @@
+ID_Servicio,Categoria,Nombre_Servicio,Descripcion,Precio_Sugerido,Tiempo_Estimado_Min,Activo
+SRV-001,Diagnóstico,Diagnóstico Sistema Eléctrico,"Escaneo de falla eléctrica general, prueba de fuga de corriente y voltaje.",350,45,Sí
+SRV-002,Sistema Carga,Mantenimiento de Alternador,"Limpieza, cambio de carbones, placa rectificadora y baleros.",850,120,Sí
+SRV-003,Sistema Arranque,Reparación Motor de Arranque,"Diagnóstico, cambio de solenoide, carbones y bendix.",750,90,Sí
+SRV-004,Iluminación,Instalación de Luces / Faros,"Instalación de cableado, relevadores y cambio de focos principales.",400,60,Sí
+SRV-005,Baterías,Prueba y Cambio de Batería,"Diagnóstico con probador digital CCA, limpieza de bornes y reemplazo.",200,30,Sí
+SRV-006,Accesorios,Instalación de Alarma / Corta Corriente,"Instalación de relevador corta corriente, sirena y sensor de impacto.",950,150,Sí
+SRV-007,Diagnóstico,Escaneo Computarizado OBD-II,Lectura y borrado de códigos de falla en módulos ECU/BCM.,300,30,Sí

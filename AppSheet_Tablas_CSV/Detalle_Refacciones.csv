@@ -1,0 +1,4 @@
+ID_Detalle_Refaccion,ID_Orden,ID_Refaccion,Cantidad,Precio_Unitario,Subtotal
+DR-001,ORD-001,REF-002,1,2900,2900
+DR-002,ORD-002,REF-004,1,85,85
+DR-003,ORD-002,REF-005,1,550,550

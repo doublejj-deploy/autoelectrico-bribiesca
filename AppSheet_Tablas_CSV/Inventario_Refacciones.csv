@@ -1,0 +1,9 @@
+ID_Refaccion,Categoria,Nombre_Pieza,Marca,Stock_Actual,Stock_Minimo,Precio_Costo,Precio_Venta,Ubicacion_Almacen,Foto_Pieza
+REF-001,Baterías,Batería LTH 12V L-47-550,LTH,10,3,1800,2450,Rack Baterías,
+REF-002,Alternadores,Alternador 90A 12V,Bosch,4,2,2100,2900,Estante A-1,
+REF-003,Marchas,Juego de Carbones para Marcha,Duralast,25,5,80,180,Gaveta C-3,
+REF-004,Relevadores,Relevador 4 Pines 12V 40A,Hella,50,10,35,85,Gaveta B-1,
+REF-005,Iluminación,Foco LED H4 Par 6000K,Philips,15,4,320,550,Estante D-2,
+REF-006,Alternadores,Regulador de Voltaje 12V,Transpo,8,2,220,420,Gaveta C-1,
+REF-007,Marchas,Solenoide Automático de Marcha,Wai,6,2,380,680,Estante A-3,
+REF-008,Fusibles,Kit Fusibles Tipo Cuchilla 10-30A,Littelfuse,40,15,45,110,Gaveta B-4,

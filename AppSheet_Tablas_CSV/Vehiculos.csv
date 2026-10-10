@@ -1,0 +1,4 @@
+ID_Vehiculo,ID_Cliente,Marca,Modelo,Anio,Placa,Color,Numero_Serie_VIN,Kilometraje_Actual,Tipo_Combustible,Foto_Vehiculo
+VEH-001,CLI-001,Nissan,Versa,2018,ABC-123-A,Gris,3N1CN7AP5KL123456,85400,Gasolina,
+VEH-002,CLI-002,Chevrolet,Aveo,2020,XYZ-987-B,Blanco,3G1JB5SF0LL654321,42150,Gasolina,
+VEH-003,CLI-003,Ford,Ranger,2015,LMN-456-C,Rojo,8AFBR22D3FJ789012,145000,Diesel,

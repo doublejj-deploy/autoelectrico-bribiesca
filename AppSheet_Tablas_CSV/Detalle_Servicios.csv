@@ -1,0 +1,4 @@
+ID_Detalle_Servicio,ID_Orden,ID_Servicio,Notas_Servicio,Costo
+DS-001,ORD-001,SRV-002,Desmontaje y reemplazo de alternador,850
+DS-002,ORD-002,SRV-004,Alineación de faros e instalación de relevador,400
+DS-003,ORD-003,SRV-001,Diagnóstico de marcha y cableado,350
