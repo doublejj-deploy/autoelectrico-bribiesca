@@ -188,19 +188,22 @@ function renderAll() {
 
 // Navigation Tabs
 function setupNavigation() {
-  const tabs = document.querySelectorAll('.tab-btn');
-  tabs.forEach(btn => {
-    btn.addEventListener('click', () => {
-      tabs.forEach(t => t.classList.remove('active'));
-      btn.classList.add('active');
+  // Delegated click handling for any .tab-btn (including future ones)
+  document.body.addEventListener('click', e => {
+    const btn = e.target.closest('.tab-btn');
+    if (!btn) return;
 
-      const target = btn.getAttribute('data-tab');
-      document.querySelectorAll('.view-section').forEach(sec => sec.classList.remove('active'));
-      const activeSection = document.getElementById(`view-${target}`);
-      if (activeSection) {
-        activeSection.classList.add('active');
-      }
-    });
+    // Deactivate all tabs
+    document.querySelectorAll('.tab-btn').forEach(t => t.classList.remove('active'));
+    btn.classList.add('active');
+
+    // Hide all view sections
+    document.querySelectorAll('.view-section').forEach(sec => sec.classList.remove('active'));
+
+    // Show the target section
+    const target = btn.dataset.tab;
+    const activeSection = document.getElementById(`view-${target}`);
+    if (activeSection) activeSection.classList.add('active');
   });
 
   const viewAllBtn = document.getElementById('btn-view-all-orders');
