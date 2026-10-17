@@ -541,9 +541,14 @@
 
         </div>
 
-        <div class="modal-footer">
-          <button type="button" class="btn btn-secondary" id="btn-cancel-order">Cancelar</button>
-          <button type="submit" class="btn btn-primary" id="btn-save-order">Guardar Orden</button>
+        <div class="modal-footer" style="display: flex; justify-content: space-between; align-items: center;">
+          <button type="button" class="btn btn-outline" id="btn-delete-order" style="display: none; color: #ef4444; border-color: #ef4444;" title="Eliminar esta orden">
+            🗑️ Eliminar Orden
+          </button>
+          <div style="display: flex; gap: 0.5rem; margin-left: auto;">
+            <button type="button" class="btn btn-secondary" id="btn-cancel-order">Cancelar</button>
+            <button type="submit" class="btn btn-primary" id="btn-save-order">Guardar Orden</button>
+          </div>
         </div>
       </form>
     </div>

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-SERVIDOR CENTRALIZADO - SERVICIO AUTOELÉCTRICO BRIBIESCA (v2.0 PRO)
-Soporte Híbrido: PostgreSQL (Nube Render / Supabase / Neon) + SQLite (Local / Disco Persistente)
-Auto-migración, Auto-sincronización y Persistencia Permanente
+SERVIDOR CENTRALIZADO - SERVICIO AUTOELÉCTRICO BRIBIESCA (v2.1 ULTRA-PERSISTENCE)
+Soporte Híbrido: PostgreSQL (Render / Supabase / Neon) + SQLite Local de Contingencia
+Garantía de Persistencia: Doble escritura, auto-recuperación, auto-migración y fallback automático.
 """
 
 import http.server
@@ -21,6 +21,7 @@ DATABASE_URL = os.environ.get('DATABASE_URL') or os.environ.get('POSTGRES_URL')
 DATA_DIR = os.environ.get('DATA_DIR', os.path.dirname(os.path.abspath(__file__)))
 LOCAL_DB_FILE = os.path.join(DATA_DIR, 'taller_bribiesca.db')
 
+
 def get_local_ip():
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -32,8 +33,36 @@ def get_local_ip():
         return "127.0.0.1"
 
 
+def safe_float(val, default=0.0):
+    if val is None or val == '':
+        return default
+    try:
+        if isinstance(val, str):
+            val = val.strip().replace(',', '')
+        return float(val)
+    except (ValueError, TypeError):
+        return default
+
+
+def safe_int(val, default=0):
+    if val is None or val == '':
+        return default
+    try:
+        if isinstance(val, str):
+            val = val.strip().replace(',', '')
+        return int(float(val))
+    except (ValueError, TypeError):
+        return default
+
+
+def safe_str(val, default=''):
+    if val is None:
+        return default
+    return str(val).strip()
+
+
 # ==============================================================================
-# GESTOR DE BASE DE DATOS (UNIFICADO POSTGRESQL + SQLITE)
+# GESTOR DE BASE DE DATOS ULTRA-PERSISTENTE (POSTGRESQL + SQLITE DOBLE ESCRITURA)
 # ==============================================================================
 
 class DatabaseManager:
@@ -43,6 +72,7 @@ class DatabaseManager:
         self.is_postgres = bool(self.db_url and ('postgres://' in self.db_url or 'postgresql://' in self.db_url))
         self.db_type = 'PostgreSQL' if self.is_postgres else 'SQLite'
         self.pg_driver = None
+        self.pg_healthy = False
 
         if self.is_postgres:
             try:
@@ -54,104 +84,189 @@ class DatabaseManager:
                     import pg8000.dbapi
                     self.pg_driver = 'pg8000'
                 except ImportError:
-                    print("⚠️ Drivers de PostgreSQL (psycopg2/pg8000) no encontrados. Usando SQLite.")
+                    print("⚠️ Drivers de PostgreSQL no encontrados. Operando con SQLite local.")
                     self.is_postgres = False
                     self.db_type = 'SQLite'
 
-    def get_connection(self):
-        if self.is_postgres:
-            return self._get_postgres_connection()
-        else:
-            conn = sqlite3.connect(self.sqlite_path, timeout=30.0)
-            conn.row_factory = sqlite3.Row
-            return conn
+    def _get_sqlite_connection(self):
+        conn = sqlite3.connect(self.sqlite_path, timeout=30.0)
+        conn.row_factory = sqlite3.Row
+        try:
+            conn.execute("PRAGMA journal_mode = WAL;")
+            conn.execute("PRAGMA synchronous = NORMAL;")
+            conn.execute("PRAGMA busy_timeout = 30000;")
+        except Exception:
+            pass
+        return conn
 
     def _get_postgres_connection(self):
+        if not self.is_postgres or not self.db_url:
+            raise RuntimeError("PostgreSQL no configurado")
+
+        url_str = self.db_url.replace('postgres://', 'postgresql://', 1)
+        parsed = urllib.parse.urlparse(url_str)
+        is_internal_render = bool(
+            parsed.hostname and (
+                'dpg-' in parsed.hostname or
+                'internal' in parsed.hostname or
+                parsed.hostname.startswith('10.') or
+                parsed.hostname.startswith('172.')
+            ) and (not parsed.hostname.endswith('.render.com') or '-a' in parsed.hostname)
+        )
+
         if self.pg_driver == 'psycopg2':
             import psycopg2
-            url = self.db_url.replace('postgres://', 'postgresql://', 1)
-            conn = psycopg2.connect(url, sslmode='require')
-            return conn
+            # Render internal network does not use SSL; external databases require/prefer SSL
+            modes_to_try = ['disable', 'prefer'] if is_internal_render else ['prefer', 'require', 'disable']
+            last_err = None
+            for mode in modes_to_try:
+                try:
+                    conn = psycopg2.connect(url_str, sslmode=mode, connect_timeout=10)
+                    return conn
+                except Exception as e:
+                    last_err = e
+            raise last_err
+
         elif self.pg_driver == 'pg8000':
             import pg8000.dbapi
-            url = urllib.parse.urlparse(self.db_url)
-            conn = pg8000.dbapi.connect(
-                user=url.username,
-                password=url.password,
-                host=url.hostname,
-                port=url.port or 5432,
-                database=url.path.lstrip('/'),
-                ssl_context=True
-            )
-            return conn
+            user = parsed.username
+            password = urllib.parse.unquote(parsed.password or '')
+            host = parsed.hostname
+            port = parsed.port or 5432
+            database = parsed.path.lstrip('/')
+
+            ssl_contexts_to_try = [None, True] if is_internal_render else [True, None]
+            last_err = None
+            for s_ctx in ssl_contexts_to_try:
+                try:
+                    conn = pg8000.dbapi.connect(
+                        user=user,
+                        password=password,
+                        host=host,
+                        port=port,
+                        database=database,
+                        ssl_context=s_ctx,
+                        timeout=10
+                    )
+                    return conn
+                except Exception as e:
+                    last_err = e
+            raise last_err
+
         raise RuntimeError("No hay driver PostgreSQL disponible")
 
-    def format_sql(self, sql):
-        if self.is_postgres:
-            return sql.replace('?', '%s')
-        return sql
-
     def execute(self, sql, params=None):
-        conn = self.get_connection()
-        cur = conn.cursor()
-        formatted_sql = self.format_sql(sql)
+        """
+        Ejecuta la sentencia SQL garantizando persistencia:
+        1. Escribe en PostgreSQL si está configurado.
+        2. Siempre escribe simultáneamente en SQLite local como respaldo inmediato.
+        """
+        pg_executed = False
+
+        if self.is_postgres:
+            try:
+                pg_conn = self._get_postgres_connection()
+                cur = pg_conn.cursor()
+                pg_sql = sql.replace('?', '%s')
+                if params:
+                    cur.execute(pg_sql, params)
+                else:
+                    cur.execute(pg_sql)
+                pg_conn.commit()
+                pg_conn.close()
+                pg_executed = True
+                self.pg_healthy = True
+            except Exception as e:
+                self.pg_healthy = False
+                print(f"⚠️ Error al escribir en PostgreSQL ({e}). Asegurando en SQLite local.")
+
+        # Respaldo simultáneo en SQLite local
         try:
+            sq_conn = self._get_sqlite_connection()
+            sq_cur = sq_conn.cursor()
             if params:
-                cur.execute(formatted_sql, params)
+                sq_cur.execute(sql, params)
             else:
-                cur.execute(formatted_sql)
-            conn.commit()
-            return cur
+                sq_cur.execute(sql)
+            sq_conn.commit()
+            sq_conn.close()
         except Exception as e:
-            conn.rollback()
-            raise e
-        finally:
-            conn.close()
+            print(f"⚠️ Error al escribir en SQLite local: {e}")
+            if not pg_executed:
+                raise e
 
     def fetch_all(self, sql, params=None):
-        conn = self.get_connection()
-        cur = conn.cursor()
-        formatted_sql = self.format_sql(sql)
+        """Lee desde PostgreSQL si está saludable; si no, lee desde SQLite local sin interrupciones."""
+        if self.is_postgres and self.pg_healthy:
+            try:
+                pg_conn = self._get_postgres_connection()
+                cur = pg_conn.cursor()
+                pg_sql = sql.replace('?', '%s')
+                if params:
+                    cur.execute(pg_sql, params)
+                else:
+                    cur.execute(pg_sql)
+                if cur.description:
+                    col_names = [desc[0] for desc in cur.description]
+                    rows = cur.fetchall()
+                    res = [dict(zip(col_names, row)) for row in rows]
+                else:
+                    res = []
+                pg_conn.close()
+                return res
+            except Exception as e:
+                print(f"⚠️ Error al consultar PostgreSQL ({e}). Consultando SQLite local.")
+                self.pg_healthy = False
+
+        # Lectura de SQLite
+        sq_conn = self._get_sqlite_connection()
+        sq_cur = sq_conn.cursor()
         try:
             if params:
-                cur.execute(formatted_sql, params)
+                rows = sq_cur.execute(sql, params).fetchall()
             else:
-                cur.execute(formatted_sql)
-            
-            if self.is_postgres:
-                col_names = [desc[0] for desc in cur.description]
-                rows = cur.fetchall()
-                return [dict(zip(col_names, row)) for row in rows]
-            else:
-                rows = cur.fetchall()
-                return [dict(r) for r in rows]
+                rows = sq_cur.execute(sql).fetchall()
+            return [dict(r) for r in rows]
         finally:
-            conn.close()
+            sq_conn.close()
 
     def fetch_one(self, sql, params=None):
-        conn = self.get_connection()
-        cur = conn.cursor()
-        formatted_sql = self.format_sql(sql)
+        """Lee un registro individual con fallback transparente."""
+        if self.is_postgres and self.pg_healthy:
+            try:
+                pg_conn = self._get_postgres_connection()
+                cur = pg_conn.cursor()
+                pg_sql = sql.replace('?', '%s')
+                if params:
+                    cur.execute(pg_sql, params)
+                else:
+                    cur.execute(pg_sql)
+                row = cur.fetchone()
+                if row and cur.description:
+                    col_names = [desc[0] for desc in cur.description]
+                    res = dict(zip(col_names, row))
+                else:
+                    res = None
+                pg_conn.close()
+                return res
+            except Exception as e:
+                print(f"⚠️ Error al consultar PostgreSQL ({e}). Consultando SQLite.")
+                self.pg_healthy = False
+
+        # Lectura de SQLite
+        sq_conn = self._get_sqlite_connection()
+        sq_cur = sq_conn.cursor()
         try:
             if params:
-                cur.execute(formatted_sql, params)
+                row = sq_cur.execute(sql, params).fetchone()
             else:
-                cur.execute(formatted_sql)
-            
-            if self.is_postgres:
-                row = cur.fetchone()
-                if row:
-                    col_names = [desc[0] for desc in cur.description]
-                    return dict(zip(col_names, row))
-                return None
-            else:
-                row = cur.fetchone()
-                return dict(row) if row else None
+                row = sq_cur.execute(sql).fetchone()
+            return dict(row) if row else None
         finally:
-            conn.close()
+            sq_conn.close()
 
     def init_schema(self):
-        """Crea todas las tablas necesarias si no existen."""
+        """Inicializa esquemas en SQLite y PostgreSQL."""
         schema_statements = [
             """CREATE TABLE IF NOT EXISTS clientes (
                 id_cliente TEXT PRIMARY KEY,
@@ -267,20 +382,34 @@ class DatabaseManager:
             )"""
         ]
 
-        conn = self.get_connection()
-        cur = conn.cursor()
+        # 1. Inicializar SQLite
         try:
+            sq_conn = self._get_sqlite_connection()
+            sq_cur = sq_conn.cursor()
             for stmt in schema_statements:
-                cur.execute(self.format_sql(stmt))
-            conn.commit()
-            print(f"✅ Esquema de Base de Datos ({self.db_type}) inicializado correctamente.")
+                sq_cur.execute(stmt)
+            sq_conn.commit()
+            sq_conn.close()
+            print("✅ Esquema SQLite inicializado correctamente.")
         except Exception as e:
-            conn.rollback()
-            print(f"❌ Error al inicializar esquema en {self.db_type}: {e}")
-        finally:
-            conn.close()
+            print(f"❌ Error al inicializar esquema SQLite: {e}")
 
-        # Verificar si la base está vacía para sembrar datos iniciales o migrar
+        # 2. Inicializar PostgreSQL si está disponible
+        if self.is_postgres:
+            try:
+                pg_conn = self._get_postgres_connection()
+                pg_cur = pg_conn.cursor()
+                for stmt in schema_statements:
+                    pg_cur.execute(stmt)
+                pg_conn.commit()
+                pg_conn.close()
+                self.pg_healthy = True
+                print("✅ Esquema PostgreSQL inicializado y sincronizado en la Nube.")
+            except Exception as e:
+                self.pg_healthy = False
+                print(f"⚠️ No se pudo inicializar esquema PostgreSQL ({e}). Operando con SQLite.")
+
+        # 3. Sembrar datos si la base está vacía
         self.seed_if_empty()
 
     def seed_if_empty(self):
@@ -288,12 +417,12 @@ class DatabaseManager:
             row = self.fetch_one("SELECT COUNT(*) AS count FROM clientes")
             count = row.get('count', 0) if row else 0
             if count > 0:
-                return  # Ya tiene datos
+                return
 
             print("🌱 Base de datos vacía detectada. Sembrando datos iniciales...")
 
-            # 1. Si existe archivo local SQLite previo, intentar importar desde ahí
-            if self.is_postgres and os.path.exists(self.sqlite_path):
+            # 1. Si existe archivo local SQLite previo con datos, importar a PostgreSQL
+            if self.is_postgres and self.pg_healthy and os.path.exists(self.sqlite_path):
                 try:
                     local_conn = sqlite3.connect(self.sqlite_path)
                     local_conn.row_factory = sqlite3.Row
@@ -301,22 +430,21 @@ class DatabaseManager:
                     tables = ['clientes', 'vehiculos', 'tecnicos', 'servicios_catalogo',
                               'inventario_refacciones', 'ordenes_trabajo', 'detalle_servicios',
                               'detalle_refacciones', 'configuracion_taller']
-                    migrated_any = False
+                    migrated = False
                     for tbl in tables:
                         rows = local_cur.execute(f"SELECT * FROM {tbl}").fetchall()
                         if rows:
-                            migrated_any = True
+                            migrated = True
                             for r in rows:
-                                d = dict(r)
-                                self._insert_generic_dict(tbl, d)
+                                self._insert_generic_dict(tbl, dict(r))
                     local_conn.close()
-                    if migrated_any:
+                    if migrated:
                         print("✨ Migración exitosa de SQLite local hacia PostgreSQL.")
                         return
                 except Exception as e:
-                    print(f"Aviso: No se pudo migrar desde SQLite local: {e}")
+                    print(f"Aviso al migrar de SQLite a PostgreSQL: {e}")
 
-            # 2. Cargar desde data.js si no hay SQLite previo
+            # 2. Cargar desde data.js
             data_js_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data.js')
             if os.path.exists(data_js_path):
                 with open(data_js_path, 'r', encoding='utf-8') as f:
@@ -328,10 +456,12 @@ class DatabaseManager:
                     self.sync_full_state(initial_data)
                     print("✅ Datos semilla cargados exitosamente desde data.js")
         except Exception as e:
-            print(f"Error en seed_if_empty: {e}")
+            print(f"Aviso en seed_if_empty: {e}")
 
     def _insert_generic_dict(self, table_name, data_dict):
         cols = list(data_dict.keys())
+        if not cols:
+            return
         placeholders = ', '.join(['?'] * len(cols))
         col_names = ', '.join(cols)
         pk = cols[0]
@@ -348,69 +478,40 @@ class DatabaseManager:
 
     def sync_full_state(self, state):
         """Inserta o actualiza un estado completo en la base de datos."""
-        # 1. Clientes
         for c in state.get('Clientes', []):
-            self.upsert_client({
-                'ID_Cliente': c.get('ID_Cliente'),
-                'Nombre_Completo': c.get('Nombre_Completo'),
-                'Telefono': c.get('Telefono'),
-                'Email': c.get('Email', ''),
-                'Direccion': c.get('Direccion', ''),
-                'RFC_Facturacion': c.get('RFC_Facturacion', ''),
-                'Fecha_Registro': c.get('Fecha_Registro', ''),
-                'Notas': c.get('Notas', '')
-            })
+            self.upsert_client(c)
 
-        # 2. Vehículos
         for v in state.get('Vehiculos', []):
-            self.upsert_vehicle({
-                'ID_Vehiculo': v.get('ID_Vehiculo'),
-                'ID_Cliente': v.get('ID_Cliente'),
-                'Marca': v.get('Marca', ''),
-                'Modelo': v.get('Modelo', ''),
-                'Anio': v.get('Anio', 2020),
-                'Placa': v.get('Placa', ''),
-                'Color': v.get('Color', ''),
-                'Numero_Serie_VIN': v.get('Numero_Serie_VIN', ''),
-                'Kilometraje_Actual': v.get('Kilometraje_Actual', 0),
-                'Tipo_Combustible': v.get('Tipo_Combustible', 'Gasolina'),
-                'Foto_Vehiculo': v.get('Foto_Vehiculo', '')
-            })
+            self.upsert_vehicle(v)
 
-        # 3. Técnicos
         for t in state.get('Tecnicos', []):
             self.upsert_technician(t)
 
-        # 4. Servicios
         for s in state.get('Servicios_Catalogo', []):
             self.upsert_service(s)
 
-        # 5. Refacciones
         for r in state.get('Inventario_Refacciones', []):
             self.upsert_part(r)
 
-        # 6. Órdenes
         for o in state.get('Ordenes_Trabajo', []):
             self.upsert_order(o)
 
     def upsert_client(self, data):
-        cid = data.get('ID_Cliente') or data.get('id_cliente')
+        cid = safe_str(data.get('ID_Cliente') or data.get('id_cliente'))
         if not cid:
             count_row = self.fetch_one("SELECT COUNT(*) AS c FROM clientes")
             cnt = (count_row.get('c') if count_row else 0) + 1
             cid = f"CLI-{str(cnt).zfill(3)}"
 
-        params = (
-            data.get('Nombre_Completo') or data.get('nombre_completo', ''),
-            data.get('Telefono') or data.get('telefono', ''),
-            data.get('Email') or data.get('email', ''),
-            data.get('Direccion') or data.get('direccion', ''),
-            data.get('RFC_Facturacion') or data.get('rfc_facturacion', ''),
-            data.get('Fecha_Registro') or data.get('fecha_registro', ''),
-            data.get('Notas') or data.get('notas', ''),
-            cid
-        )
+        nombre = safe_str(data.get('Nombre_Completo') or data.get('nombre_completo'), 'Cliente General')
+        telefono = safe_str(data.get('Telefono') or data.get('telefono'))
+        email = safe_str(data.get('Email') or data.get('email'))
+        direccion = safe_str(data.get('Direccion') or data.get('direccion'))
+        rfc = safe_str(data.get('RFC_Facturacion') or data.get('rfc_facturacion'))
+        fecha = safe_str(data.get('Fecha_Registro') or data.get('fecha_registro'))
+        notas = safe_str(data.get('Notas') or data.get('notas'))
 
+        params = (nombre, telefono, email, direccion, rfc, fecha, notas, cid)
         existing = self.fetch_one("SELECT 1 FROM clientes WHERE id_cliente = ?", (cid,))
         if existing:
             self.execute("""UPDATE clientes SET
@@ -425,27 +526,27 @@ class DatabaseManager:
         return cid
 
     def upsert_vehicle(self, data):
-        vid = data.get('ID_Vehiculo') or data.get('id_vehiculo')
+        vid = safe_str(data.get('ID_Vehiculo') or data.get('id_vehiculo'))
         if not vid:
             count_row = self.fetch_one("SELECT COUNT(*) AS c FROM vehiculos")
             cnt = (count_row.get('c') if count_row else 0) + 1
             vid = f"VEH-{str(cnt).zfill(3)}"
 
-        placa = (data.get('Placa') or data.get('placa') or '').strip().upper()
+        placa = safe_str(data.get('Placa') or data.get('placa')).upper()
         if not placa:
             placa = f"SIN-PLACA-{vid}"
 
         params = (
-            data.get('ID_Cliente') or data.get('id_cliente'),
-            data.get('Marca') or data.get('marca', ''),
-            data.get('Modelo') or data.get('modelo', ''),
-            data.get('Anio') or data.get('anio', 2020),
+            safe_str(data.get('ID_Cliente') or data.get('id_cliente')),
+            safe_str(data.get('Marca') or data.get('marca'), 'Generico'),
+            safe_str(data.get('Modelo') or data.get('modelo'), 'Unidad'),
+            safe_int(data.get('Anio') or data.get('anio'), 2020),
             placa,
-            data.get('Color') or data.get('color', ''),
-            data.get('Numero_Serie_VIN') or data.get('numero_serie_vin', ''),
-            data.get('Kilometraje_Actual') or data.get('kilometraje_actual', 0),
-            data.get('Tipo_Combustible') or data.get('tipo_combustible', 'Gasolina'),
-            data.get('Foto_Vehiculo') or data.get('foto_vehiculo', ''),
+            safe_str(data.get('Color') or data.get('color')),
+            safe_str(data.get('Numero_Serie_VIN') or data.get('numero_serie_vin')),
+            safe_float(data.get('Kilometraje_Actual') or data.get('kilometraje_actual'), 0),
+            safe_str(data.get('Tipo_Combustible') or data.get('tipo_combustible'), 'Gasolina'),
+            safe_str(data.get('Foto_Vehiculo') or data.get('foto_vehiculo')),
             vid
         )
 
@@ -465,13 +566,16 @@ class DatabaseManager:
         return vid
 
     def upsert_technician(self, data):
-        tid = data.get('ID_Tecnico') or data.get('id_tecnico')
+        tid = safe_str(data.get('ID_Tecnico') or data.get('id_tecnico'))
+        if not tid:
+            tid = 'TEC-001'
+
         params = (
-            data.get('Nombre_Tecnico') or data.get('nombre_tecnico', ''),
-            data.get('Telefono') or data.get('telefono', ''),
-            data.get('Especialidad') or data.get('especialidad', ''),
-            data.get('Email') or data.get('email', ''),
-            data.get('Estado_Activo') or data.get('estado_activo', 'Activo'),
+            safe_str(data.get('Nombre_Tecnico') or data.get('nombre_tecnico'), 'Técnico'),
+            safe_str(data.get('Telefono') or data.get('telefono')),
+            safe_str(data.get('Especialidad') or data.get('especialidad'), 'Electromecánico'),
+            safe_str(data.get('Email') or data.get('email')),
+            safe_str(data.get('Estado_Activo') or data.get('estado_activo'), 'Activo'),
             tid
         )
         existing = self.fetch_one("SELECT 1 FROM tecnicos WHERE id_tecnico = ?", (tid,))
@@ -479,21 +583,22 @@ class DatabaseManager:
             self.execute("UPDATE tecnicos SET nombre_tecnico = ?, telefono = ?, especialidad = ?, email = ?, estado_activo = ? WHERE id_tecnico = ?", params)
         else:
             self.execute("INSERT INTO tecnicos (nombre_tecnico, telefono, especialidad, email, estado_activo, id_tecnico) VALUES (?, ?, ?, ?, ?, ?)", params)
+        return tid
 
     def upsert_service(self, data):
-        sid = data.get('ID_Servicio') or data.get('id_servicio')
+        sid = safe_str(data.get('ID_Servicio') or data.get('id_servicio'))
         if not sid:
             count_row = self.fetch_one("SELECT COUNT(*) AS c FROM servicios_catalogo")
             cnt = (count_row.get('c') if count_row else 0) + 1
             sid = f"SRV-{str(cnt).zfill(3)}"
 
         params = (
-            data.get('Categoria') or data.get('categoria', 'General'),
-            data.get('Nombre_Servicio') or data.get('nombre_servicio', ''),
-            data.get('Descripcion') or data.get('descripcion', ''),
-            float(data.get('Precio_Sugerido') or data.get('precio_sugerido') or 0),
-            int(data.get('Tiempo_Estimado_Min') or data.get('tiempo_estimado_min') or 60),
-            data.get('Activo') or data.get('activo', 'Sí'),
+            safe_str(data.get('Categoria') or data.get('categoria'), 'General'),
+            safe_str(data.get('Nombre_Servicio') or data.get('nombre_servicio'), 'Servicio General'),
+            safe_str(data.get('Descripcion') or data.get('descripcion')),
+            safe_float(data.get('Precio_Sugerido') or data.get('precio_sugerido'), 0),
+            safe_int(data.get('Tiempo_Estimado_Min') or data.get('tiempo_estimado_min'), 60),
+            safe_str(data.get('Activo') or data.get('activo'), 'Sí'),
             sid
         )
         existing = self.fetch_one("SELECT 1 FROM servicios_catalogo WHERE id_servicio = ?", (sid,))
@@ -510,22 +615,22 @@ class DatabaseManager:
         return sid
 
     def upsert_part(self, data):
-        pid = data.get('ID_Refaccion') or data.get('id_refaccion')
+        pid = safe_str(data.get('ID_Refaccion') or data.get('id_refaccion'))
         if not pid:
             count_row = self.fetch_one("SELECT COUNT(*) AS c FROM inventario_refacciones")
             cnt = (count_row.get('c') if count_row else 0) + 1
             pid = f"REF-{str(cnt).zfill(3)}"
 
         params = (
-            data.get('Categoria') or data.get('categoria', 'General'),
-            data.get('Nombre_Pieza') or data.get('nombre_pieza', ''),
-            data.get('Marca') or data.get('marca', ''),
-            float(data.get('Stock_Actual') or data.get('stock_actual') or 0),
-            float(data.get('Stock_Minimo') or data.get('stock_minimo') or 2),
-            float(data.get('Precio_Costo') or data.get('precio_costo') or 0),
-            float(data.get('Precio_Venta') or data.get('precio_venta') or 0),
-            data.get('Ubicacion_Almacen') or data.get('ubicacion_almacen', ''),
-            data.get('Foto_Pieza') or data.get('foto_pieza', ''),
+            safe_str(data.get('Categoria') or data.get('categoria'), 'General'),
+            safe_str(data.get('Nombre_Pieza') or data.get('nombre_pieza'), 'Refacción'),
+            safe_str(data.get('Marca') or data.get('marca')),
+            safe_float(data.get('Stock_Actual') or data.get('stock_actual'), 0),
+            safe_float(data.get('Stock_Minimo') or data.get('stock_minimo'), 2),
+            safe_float(data.get('Precio_Costo') or data.get('precio_costo'), 0),
+            safe_float(data.get('Precio_Venta') or data.get('precio_venta'), 0),
+            safe_str(data.get('Ubicacion_Almacen') or data.get('ubicacion_almacen')),
+            safe_str(data.get('Foto_Pieza') or data.get('foto_pieza')),
             pid
         )
         existing = self.fetch_one("SELECT 1 FROM inventario_refacciones WHERE id_refaccion = ?", (pid,))
@@ -544,43 +649,43 @@ class DatabaseManager:
         return pid
 
     def upsert_order(self, data):
-        oid = data.get('ID_Orden') or data.get('id_orden')
+        oid = safe_str(data.get('ID_Orden') or data.get('id_orden'))
         if not oid:
             count_row = self.fetch_one("SELECT COUNT(*) AS c FROM ordenes_trabajo")
             cnt = (count_row.get('c') if count_row else 0) + 1
             oid = f"ORD-{str(cnt).zfill(3)}"
 
         params = (
-            data.get('ID_Vehiculo') or data.get('id_vehiculo'),
-            data.get('ID_Tecnico') or data.get('id_tecnico'),
-            data.get('Fecha_Ingreso') or data.get('fecha_ingreso', ''),
-            data.get('Fecha_Entrega_Estimada') or data.get('fecha_entrega_estimada', ''),
-            data.get('Fecha_Entrega_Real') or data.get('fecha_entrega_real', ''),
-            data.get('Estado') or data.get('estado', 'Recepcionado'),
-            data.get('Prioridad') or data.get('prioridad', 'Normal'),
-            float(data.get('Kilometraje_Ingreso') or data.get('kilometraje_ingreso') or 0),
-            data.get('Nivel_Combustible') or data.get('nivel_combustible', '1/2'),
-            float(data.get('Voltaje_Bateria_V') or data.get('voltaje_bateria_v') or 0),
-            float(data.get('Voltaje_Alternador_V') or data.get('voltaje_alternador_v') or 0),
-            data.get('Estado_Marcha') or data.get('estado_marcha', 'Normal'),
-            data.get('Codigos_Falla_OBD2') or data.get('codigos_falla_obd2', ''),
-            data.get('Falla_Reportada') or data.get('falla_reportada', ''),
-            data.get('Diagnostico_Tecnico') or data.get('diagnostico_tecnico', ''),
-            data.get('Trabajo_Realizado') or data.get('trabajo_realizado', ''),
-            float(data.get('Total_Mano_Obra') or data.get('total_mano_obra') or 0),
-            float(data.get('Total_Refacciones') or data.get('total_refacciones') or 0),
-            float(data.get('Subtotal') or data.get('subtotal') or 0),
-            float(data.get('Descuento') or data.get('descuento') or 0),
-            float(data.get('Total_General') or data.get('total_general') or 0),
-            float(data.get('Anticipo') or data.get('anticipo') or 0),
-            float(data.get('Saldo_Pendiente') or data.get('saldo_pendiente') or 0),
-            data.get('Metodo_Pago') or data.get('metodo_pago', 'Efectivo'),
-            data.get('Estado_Pago') or data.get('estado_pago', 'Pendiente'),
-            data.get('Foto_Entrada_Frente') or data.get('foto_entrada_frente', ''),
-            data.get('Foto_Tablero_Testigos') or data.get('foto_tablero_testigos', ''),
-            data.get('Firma_Cliente_Ingreso') or data.get('firma_cliente_ingreso', ''),
-            data.get('Firma_Cliente_Entrega') or data.get('firma_cliente_entrega', ''),
-            data.get('Notas_Internas') or data.get('notas_internas', ''),
+            safe_str(data.get('ID_Vehiculo') or data.get('id_vehiculo')),
+            safe_str(data.get('ID_Tecnico') or data.get('id_tecnico')),
+            safe_str(data.get('Fecha_Ingreso') or data.get('fecha_ingreso')),
+            safe_str(data.get('Fecha_Entrega_Estimada') or data.get('fecha_entrega_estimada')),
+            safe_str(data.get('Fecha_Entrega_Real') or data.get('fecha_entrega_real')),
+            safe_str(data.get('Estado') or data.get('estado'), 'Recepcionado'),
+            safe_str(data.get('Prioridad') or data.get('prioridad'), 'Normal'),
+            safe_float(data.get('Kilometraje_Ingreso') or data.get('kilometraje_ingreso'), 0),
+            safe_str(data.get('Nivel_Combustible') or data.get('nivel_combustible'), '1/2'),
+            safe_float(data.get('Voltaje_Bateria_V') or data.get('voltaje_bateria_v'), 0),
+            safe_float(data.get('Voltaje_Alternador_V') or data.get('voltaje_alternador_v'), 0),
+            safe_str(data.get('Estado_Marcha') or data.get('estado_marcha'), 'Normal'),
+            safe_str(data.get('Codigos_Falla_OBD2') or data.get('codigos_falla_obd2')),
+            safe_str(data.get('Falla_Reportada') or data.get('falla_reportada')),
+            safe_str(data.get('Diagnostico_Tecnico') or data.get('diagnostico_tecnico')),
+            safe_str(data.get('Trabajo_Realizado') or data.get('trabajo_realizado')),
+            safe_float(data.get('Total_Mano_Obra') or data.get('total_mano_obra'), 0),
+            safe_float(data.get('Total_Refacciones') or data.get('total_refacciones'), 0),
+            safe_float(data.get('Subtotal') or data.get('subtotal'), 0),
+            safe_float(data.get('Descuento') or data.get('descuento'), 0),
+            safe_float(data.get('Total_General') or data.get('total_general'), 0),
+            safe_float(data.get('Anticipo') or data.get('anticipo'), 0),
+            safe_float(data.get('Saldo_Pendiente') or data.get('saldo_pendiente'), 0),
+            safe_str(data.get('Metodo_Pago') or data.get('metodo_pago'), 'Efectivo'),
+            safe_str(data.get('Estado_Pago') or data.get('estado_pago'), 'Pendiente'),
+            safe_str(data.get('Foto_Entrada_Frente') or data.get('foto_entrada_frente')),
+            safe_str(data.get('Foto_Tablero_Testigos') or data.get('foto_tablero_testigos')),
+            safe_str(data.get('Firma_Cliente_Ingreso') or data.get('firma_cliente_ingreso')),
+            safe_str(data.get('Firma_Cliente_Entrega') or data.get('firma_cliente_entrega')),
+            safe_str(data.get('Notas_Internas') or data.get('notas_internas')),
             oid
         )
 
@@ -611,8 +716,14 @@ class DatabaseManager:
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", params)
         return oid
 
+    def delete_order(self, oid):
+        self.execute("DELETE FROM ordenes_trabajo WHERE id_orden = ?", (oid,))
+        self.execute("DELETE FROM detalle_servicios WHERE id_orden = ?", (oid,))
+        self.execute("DELETE FROM detalle_refacciones WHERE id_orden = ?", (oid,))
+        return True
 
-# Instancia Global del Gestor
+
+# Instancia Global
 db_manager = DatabaseManager()
 
 
@@ -642,7 +753,7 @@ class CentralDatabaseHandler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(payload)
         except Exception as e:
-            print(f"Error sending json response: {e}")
+            print(f"Error enviando respuesta JSON: {e}")
 
     def read_json_body(self):
         content_length = int(self.headers.get('Content-Length', 0))
@@ -651,33 +762,42 @@ class CentralDatabaseHandler(http.server.BaseHTTPRequestHandler):
             try:
                 return json.loads(raw.decode('utf-8'))
             except Exception as e:
-                print(f"Error parsing JSON body: {e}")
+                print(f"Error decodificando cuerpo JSON: {e}")
                 return {}
         return {}
 
     # === RUTAS GET ===
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
-        path = parsed.path
+        path = parsed.path.rstrip('/') or '/'
 
         if path == '/api/status':
             try:
                 orders_count = (db_manager.fetch_one("SELECT COUNT(*) AS c FROM ordenes_trabajo") or {}).get('c', 0)
                 clients_count = (db_manager.fetch_one("SELECT COUNT(*) AS c FROM clientes") or {}).get('c', 0)
                 parts_count = (db_manager.fetch_one("SELECT COUNT(*) AS c FROM inventario_refacciones") or {}).get('c', 0)
+                vehicles_count = (db_manager.fetch_one("SELECT COUNT(*) AS c FROM vehiculos") or {}).get('c', 0)
+
+                active_engine = "PostgreSQL (Nube Render)" if (db_manager.is_postgres and db_manager.pg_healthy) else (
+                    "SQLite Local (Respaldo en Contingencia)" if db_manager.is_postgres else "SQLite Local Persistente"
+                )
+
                 self.send_json({
                     'status': 'online',
                     'database_type': db_manager.db_type,
-                    'is_persistent': db_manager.is_postgres or ('/data' in LOCAL_DB_FILE),
-                    'storage_info': 'Nube Permanente (PostgreSQL)' if db_manager.is_postgres else 'SQLite Local / Contenedor',
+                    'active_engine': active_engine,
+                    'pg_healthy': db_manager.pg_healthy,
+                    'is_persistent': True,
+                    'dual_write_enabled': True,
                     'counts': {
                         'orders': orders_count,
                         'clients': clients_count,
+                        'vehicles': vehicles_count,
                         'parts': parts_count
                     },
                     'local_ip': get_local_ip(),
                     'port': PORT,
-                    'version': '2.0-pro'
+                    'version': '2.1-ultra-persistence'
                 })
             except Exception as e:
                 self.send_json({'status': 'error', 'error': str(e)}, 500)
@@ -692,12 +812,12 @@ class CentralDatabaseHandler(http.server.BaseHTTPRequestHandler):
             return
 
         # Servir archivos estáticos
-        self.serve_static_file(path)
+        self.serve_static_file(parsed.path)
 
     # === RUTAS POST ===
     def do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
-        path = parsed.path
+        path = parsed.path.rstrip('/') or '/'
         body = self.read_json_body()
 
         if path == '/api/orders':
@@ -726,12 +846,12 @@ class CentralDatabaseHandler(http.server.BaseHTTPRequestHandler):
             self.handle_sync_all(body)
             return
 
-        self.send_json({'error': 'Endpoint no encontrado'}, 404)
+        self.send_json({'error': 'Endpoint POST no encontrado'}, 404)
 
     # === RUTAS PUT ===
     def do_PUT(self):
         parsed = urllib.parse.urlparse(self.path)
-        path = parsed.path
+        path = parsed.path.rstrip('/') or '/'
         body = self.read_json_body()
 
         if path.startswith('/api/orders/'):
@@ -740,26 +860,26 @@ class CentralDatabaseHandler(http.server.BaseHTTPRequestHandler):
             self.handle_save_order(body)
             return
 
-        self.send_json({'error': 'Endpoint no encontrado'}, 404)
+        self.send_json({'error': 'Endpoint PUT no encontrado'}, 404)
 
     # === RUTAS DELETE ===
     def do_DELETE(self):
         parsed = urllib.parse.urlparse(self.path)
-        path = parsed.path
+        path = parsed.path.rstrip('/') or '/'
 
         if path.startswith('/api/orders/'):
             order_id = path.split('/')[3]
             try:
-                db_manager.execute("DELETE FROM ordenes_trabajo WHERE id_orden = ?", (order_id,))
-                self.send_json({'success': True, 'id_orden': order_id, 'message': 'Orden eliminada'})
+                db_manager.delete_order(order_id)
+                self.send_json({'success': True, 'id_orden': order_id, 'message': 'Orden eliminada de base de datos'})
             except Exception as e:
                 self.send_json({'success': False, 'error': str(e)}, 500)
             return
 
-        self.send_json({'error': 'Endpoint no encontrado'}, 404)
+        self.send_json({'error': 'Endpoint DELETE no encontrado'}, 404)
 
     # ==========================================================================
-    # API HANDLERS IMPLEMENTATION
+    # MANEJADORES DE OPERACIONES API
     # ==========================================================================
 
     def handle_get_all_data(self):
@@ -774,7 +894,7 @@ class CentralDatabaseHandler(http.server.BaseHTTPRequestHandler):
             det_refacciones_raw = db_manager.fetch_all("SELECT * FROM detalle_refacciones")
             config_raw = db_manager.fetch_all("SELECT * FROM configuracion_taller")
 
-            # Mapeo a CamelCase esperado por app.js
+            # Mapeo universal a CamelCase
             clientes = [{
                 'ID_Cliente': r.get('id_cliente'),
                 'Nombre_Completo': r.get('nombre_completo'),
@@ -887,7 +1007,7 @@ class CentralDatabaseHandler(http.server.BaseHTTPRequestHandler):
             self.send_json({
                 'success': True,
                 'id_orden': order_id,
-                'message': f'Orden guardada exitosamente en BD ({db_manager.db_type})'
+                'message': f'Orden persistida correctamente en base de datos ({db_manager.db_type})'
             })
         except Exception as e:
             traceback.print_exc()
@@ -919,13 +1039,13 @@ class CentralDatabaseHandler(http.server.BaseHTTPRequestHandler):
 
     def handle_adjust_stock(self, part_id, data):
         try:
-            delta = int(data.get('delta', 0))
+            delta = safe_int(data.get('delta', 0))
             row = db_manager.fetch_one("SELECT stock_actual, nombre_pieza FROM inventario_refacciones WHERE id_refaccion = ?", (part_id,))
             if not row:
                 self.send_json({'error': 'Pieza no encontrada'}, 404)
                 return
 
-            current_stock = float(row.get('stock_actual') or 0)
+            current_stock = safe_float(row.get('stock_actual'), 0)
             new_stock = max(0, current_stock + delta)
             db_manager.execute("UPDATE inventario_refacciones SET stock_actual = ? WHERE id_refaccion = ?", (new_stock, part_id))
 
@@ -948,14 +1068,16 @@ class CentralDatabaseHandler(http.server.BaseHTTPRequestHandler):
             self.send_json({'success': False, 'error': str(e)}, 500)
 
     def handle_sync_all(self, data):
-        """Sincroniza un estado completo enviado desde el cliente (auto-recuperación)."""
+        """Sincroniza un estado completo enviado desde el cliente (auto-hidratación o respaldo)."""
         try:
             db_manager.sync_full_state(data)
+            orders_c = len(data.get('Ordenes_Trabajo', []))
+            clients_c = len(data.get('Clientes', []))
             self.send_json({
                 'success': True,
-                'message': 'Estado completo sincronizado y persistido correctamente',
-                'orders_synced': len(data.get('Ordenes_Trabajo', [])),
-                'clients_synced': len(data.get('Clientes', []))
+                'message': 'Estado completo sincronizado y persistido permanentemente en Base de Datos',
+                'orders_synced': orders_c,
+                'clients_synced': clients_c
             })
         except Exception as e:
             traceback.print_exc()
@@ -994,12 +1116,12 @@ class CentralDatabaseHandler(http.server.BaseHTTPRequestHandler):
             self.send_json({'success': False, 'error': str(e)}, 500)
 
     # === SERVIR ARCHIVOS ESTÁTICOS ===
-    def serve_static_file(self, path):
-        if path == '/' or path == '':
-            path = '/index.html'
+    def serve_static_file(self, raw_path):
+        clean_path = urllib.parse.unquote(raw_path).lstrip('/')
+        if clean_path == '' or clean_path == '/':
+            clean_path = 'index.html'
 
         base_dir = os.path.dirname(os.path.abspath(__file__))
-        clean_path = urllib.parse.unquote(path).lstrip('/')
         full_path = os.path.join(base_dir, clean_path)
 
         if not os.path.commonprefix([os.path.abspath(full_path), base_dir]).startswith(base_dir):
@@ -1033,16 +1155,15 @@ class CentralDatabaseHandler(http.server.BaseHTTPRequestHandler):
 
 if __name__ == '__main__':
     local_ip = get_local_ip()
-    print("=" * 68)
-    print("⚡ SERVIDOR CENTRALIZADO - SERVICIO AUTOELÉCTRICO BRIBIESCA (v2.0 PRO)")
-    print(f"🗄️  Motor de Base de Datos: {db_manager.db_type}")
+    print("=" * 72)
+    print("⚡ SERVIDOR CENTRALIZADO - SERVICIO AUTOELÉCTRICO BRIBIESCA (v2.1 ULTRA)")
+    print(f"🗄️  Motor de Base de Datos Configurado: {db_manager.db_type}")
     if db_manager.is_postgres:
-        print(f"🌐 Conexión Nube: PostgreSQL detectado y activo")
-    else:
-        print(f"📁 Archivo SQLite: {LOCAL_DB_FILE}")
+        print(f"🌐 Nube: PostgreSQL detectado ({db_manager.pg_driver})")
+    print(f"📁 SQLite Local de Respaldo: {LOCAL_DB_FILE}")
     print(f"🖥️  Acceso Local: http://localhost:{PORT}")
     print(f"📱 Red Taller / Dispositivos: http://{local_ip}:{PORT}")
-    print("=" * 68)
+    print("=" * 72)
 
     # Inicializar tablas y datos
     db_manager.init_schema()

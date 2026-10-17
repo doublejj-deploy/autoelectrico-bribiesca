@@ -1,11 +1,13 @@
 /**
- * SERVICIO AUTOELÉCTRICO BRIBIESCA - CORE LOGIC
- * Conectado a Base de Datos Centralizada SQLite + Fallback Local
+ * SERVICIO AUTOELÉCTRICO BRIBIESCA - CORE LOGIC (v2.1 ULTRA PERSISTENCE)
+ * Conectado a Base de Datos Híbrida (PostgreSQL Render + SQLite Local de Contingencia)
+ * Doble persistencia, auto-recuperación de caché local, y respaldo permanente.
  */
 
 // Global State
 const STORAGE_KEY = 'autoelectrico_bribiesca_db_v1';
 let isCentralDbConnected = false;
+let currentDbStatus = null;
 
 let appState = {
   Clientes: [],
@@ -19,37 +21,65 @@ let appState = {
   Configuracion_Taller: []
 };
 
-// Initialize State from Central API with LocalStorage Fallback
+// Initialize State from Central API with LocalStorage Fallback and Auto-Recovery
 async function initDatabase() {
   const badge = document.getElementById('db-status-badge');
   try {
-    const res = await fetch('/api/all');
-    if (res.ok) {
-      const data = await res.json();
-      appState = data;
+    const [resAll, resStatus] = await Promise.all([
+      fetch('/api/all'),
+      fetch('/api/status').catch(() => null)
+    ]);
+
+    if (resStatus && resStatus.ok) {
+      currentDbStatus = await resStatus.json();
+    }
+
+    if (resAll.ok) {
+      const serverData = await resAll.json();
+      const localSaved = localStorage.getItem(STORAGE_KEY);
+      let localData = null;
+      if (localSaved) {
+        try { localData = JSON.parse(localSaved); } catch (e) {}
+      }
+
+      // Si el caché local tiene más órdenes que el servidor (ej. tras reinicio en Render plan gratuito)
+      const serverOrdersCount = (serverData.Ordenes_Trabajo || []).length;
+      const localOrdersCount = (localData && localData.Ordenes_Trabajo) ? localData.Ordenes_Trabajo.length : 0;
+
+      if (localData && localOrdersCount > serverOrdersCount) {
+        console.log(`Auto-recuperación activa: ${localOrdersCount} órdenes locales vs ${serverOrdersCount} en servidor. Sincronizando...`);
+        try {
+          await fetch('/api/sync-all', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(localData)
+          });
+          const refetch = await fetch('/api/all');
+          if (refetch.ok) {
+            appState = await refetch.json();
+          } else {
+            appState = localData;
+          }
+        } catch (syncErr) {
+          appState = localData;
+        }
+      } else {
+        appState = serverData;
+      }
+
       isCentralDbConnected = true;
       localStorage.setItem(STORAGE_KEY, JSON.stringify(appState));
-      if (badge) {
-        badge.innerHTML = '🟢 BD Central (En línea)';
-        badge.style.color = '#34d399';
-        badge.style.borderColor = '#10b981';
-        badge.title = 'Conectado a SQLite central (taller_bribiesca.db)';
-      }
+      updateDbStatusBadge(currentDbStatus);
       renderAll();
       return;
     }
   } catch (err) {
-    console.warn('Servidor central no alcanzable, cargando almacenamiento local:', err);
+    console.warn('Servidor central no alcanzable, operando en almacenamiento local:', err);
   }
 
-  // Fallback to localStorage or seed
+  // Fallback a localStorage
   isCentralDbConnected = false;
-  if (badge) {
-    badge.innerHTML = '🟡 Modo Local (Offline)';
-    badge.style.color = '#fbbf24';
-    badge.style.borderColor = '#f59e0b';
-    badge.title = 'Operando en almacenamiento local del navegador';
-  }
+  updateDbStatusBadge(null);
 
   const saved = localStorage.getItem(STORAGE_KEY);
   if (saved) {
@@ -64,6 +94,25 @@ async function initDatabase() {
     appState = JSON.parse(JSON.stringify(INITIAL_DATABASE));
   }
   renderAll();
+}
+
+function updateDbStatusBadge(statusInfo) {
+  const badge = document.getElementById('db-status-badge');
+  if (!badge) return;
+  badge.style.cursor = 'pointer';
+
+  if (isCentralDbConnected) {
+    const engine = (statusInfo && statusInfo.active_engine) ? statusInfo.active_engine : 'BD Central';
+    badge.innerHTML = `🟢 ${engine} (En línea)`;
+    badge.style.color = '#34d399';
+    badge.style.borderColor = '#10b981';
+    badge.title = 'Haz clic para ver detalles de la Base de Datos y Persistencia';
+  } else {
+    badge.innerHTML = '🟡 Modo Local (Offline / Respaldo)';
+    badge.style.color = '#fbbf24';
+    badge.style.borderColor = '#f59e0b';
+    badge.title = 'Haz clic para ver detalles de conexión';
+  }
 }
 
 function saveLocalCache() {
@@ -102,18 +151,20 @@ document.addEventListener('DOMContentLoaded', () => {
   setupDiagnosticsTool();
   setupPrintableReceipt();
   setupGlobalSearch();
+  setupBackupAndSyncModule();
 
   // Load from Central DB
   initDatabase();
 
-  // Periodically poll central DB every 15s to keep all phones in sync
+  // Polling seguro cada 15s (evita sobreescritura accidental)
   setInterval(async () => {
     try {
       const res = await fetch('/api/all');
       if (res.ok) {
         const data = await res.json();
-        // Check if data changed
-        if (JSON.stringify(data) !== JSON.stringify(appState)) {
+        const curOrders = (appState.Ordenes_Trabajo || []).length;
+        const newOrders = (data.Ordenes_Trabajo || []).length;
+        if (newOrders >= curOrders && JSON.stringify(data) !== JSON.stringify(appState)) {
           appState = data;
           saveLocalCache();
           renderDashboard();
@@ -156,21 +207,6 @@ function setupNavigation() {
   if (viewAllBtn) {
     viewAllBtn.addEventListener('click', () => {
       document.getElementById('tab-orders').click();
-    });
-  }
-
-  // Backup / Export
-  const exportBtn = document.getElementById('btn-export-data');
-  if (exportBtn) {
-    exportBtn.addEventListener('click', () => {
-      const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(appState, null, 2));
-      const dlAnchor = document.createElement('a');
-      dlAnchor.setAttribute("href", dataStr);
-      dlAnchor.setAttribute("download", `Respaldo_Autoelectrico_Bribiesca_${new Date().toISOString().slice(0, 10)}.json`);
-      document.body.appendChild(dlAnchor);
-      dlAnchor.click();
-      dlAnchor.remove();
-      showToast('Respaldo descargado correctamente', 'success');
     });
   }
 
@@ -218,51 +254,79 @@ function updateKPIs() {
   const inventory = appState.Inventario_Refacciones || [];
 
   const activeOrders = orders.filter(o => o.Estado !== 'Entregado' && o.Estado !== 'Cancelado');
+  document.getElementById('kpi-active-orders').textContent = activeOrders.length;
+
+  const lowStock = inventory.filter(item => Number(item.Stock_Actual) <= Number(item.Stock_Minimo));
+  document.getElementById('kpi-low-stock').textContent = lowStock.length;
+
+  const monthRevenue = orders
+    .filter(o => o.Estado_Pago === 'Pagado' || o.Estado === 'Entregado')
+    .reduce((sum, o) => sum + (Number(o.Total_General) || 0), 0);
+  document.getElementById('kpi-month-revenue').textContent = `$${monthRevenue.toLocaleString('es-MX', { minimumFractionDigits: 2 })}`;
+
   const readyOrders = orders.filter(o => o.Estado === 'Listo para Entrega');
-  const lowStock = inventory.filter(p => Number(p.Stock_Actual) <= Number(p.Stock_Minimo));
-
-  const totalPending = activeOrders.reduce((sum, o) => {
-    const saldo = Number(o.Saldo_Pendiente) || 0;
-    return sum + saldo;
-  }, 0);
-
-  document.getElementById('kpi-active-val').textContent = activeOrders.length;
-  document.getElementById('kpi-ready-val').textContent = readyOrders.length;
-  document.getElementById('kpi-stock-val').textContent = lowStock.length;
-  document.getElementById('kpi-pending-val').textContent = `$${totalPending.toLocaleString('es-MX', { minimumFractionDigits: 2 })}`;
-
-  document.getElementById('badge-orders-count').textContent = activeOrders.length;
-  document.getElementById('badge-inventory-count').textContent = lowStock.length;
+  document.getElementById('kpi-ready-orders').textContent = readyOrders.length;
 }
 
-// Helpers
+// Helper: Get Client & Vehicle Info
 function getClientByVehicleId(vehId) {
   const veh = (appState.Vehiculos || []).find(v => v.ID_Vehiculo === vehId);
   if (!veh) return { cliente: null, vehiculo: null };
   const cli = (appState.Clientes || []).find(c => c.ID_Cliente === veh.ID_Cliente);
-  return { cliente: cli, vehiculo: veh };
+  return { cliente: cli || null, vehiculo: veh };
 }
 
 function getTechnician(techId) {
   return (appState.Tecnicos || []).find(t => t.ID_Tecnico === techId) || { Nombre_Tecnico: 'Sin Asignar' };
 }
 
-// DASHBOARD VIEW
+// DASHBOARD MODULE
 function renderDashboard() {
-  const container = document.getElementById('dashboard-recent-orders-container');
-  if (!container) return;
+  const tbody = document.getElementById('recent-orders-table');
+  if (!tbody) return;
 
-  const orders = [...(appState.Ordenes_Trabajo || [])].reverse().slice(0, 4);
-  container.innerHTML = orders.map(order => createOrderCardHtml(order)).join('');
-  attachOrderCardEvents(container);
+  const orders = [...(appState.Ordenes_Trabajo || [])].reverse().slice(0, 5);
+
+  tbody.innerHTML = orders.map(order => {
+    const { cliente, vehiculo } = getClientByVehicleId(order.ID_Vehiculo);
+    const tech = getTechnician(order.ID_Tecnico);
+    const vehName = vehiculo ? `${vehiculo.Marca} ${vehiculo.Modelo}` : 'Vehículo no reg.';
+    const placa = vehiculo ? vehiculo.Placa : '---';
+    const cliName = cliente ? cliente.Nombre_Completo : 'Cliente no reg.';
+
+    const statusClass = 
+      order.Estado === 'Recepcionado' ? 'status-recepcionado' :
+      order.Estado === 'En Diagnóstico' ? 'status-diagnostico' :
+      order.Estado === 'En Reparación' ? 'status-reparacion' :
+      order.Estado === 'Listo para Entrega' ? 'status-listo' : 'status-entregado';
+
+    return `
+      <tr>
+        <td><span class="order-id-badge">${order.ID_Orden}</span></td>
+        <td>
+          <strong>${vehName}</strong>
+          <span class="plate-tag" style="margin-left: 0.3rem;">${placa}</span>
+        </td>
+        <td>${cliName}</td>
+        <td>👨‍🔧 ${tech.Nombre_Tecnico.split(' ')[0]}</td>
+        <td><span class="status-pill ${statusClass}">${order.Estado}</span></td>
+        <td style="font-weight: 700; color: var(--accent-electric);">$${Number(order.Total_General || 0).toLocaleString('es-MX', { minimumFractionDigits: 2 })}</td>
+        <td>
+          <button type="button" class="btn btn-outline" style="padding: 0.25rem 0.6rem; font-size: 0.75rem;" onclick="openOrderModal('${order.ID_Orden}')">
+            Abrir
+          </button>
+        </td>
+      </tr>
+    `;
+  }).join('');
 }
 
-// ORDERS VIEW (Kanban)
+// ORDERS KANBAN MODULE
 function renderOrders() {
-  const diagCol = document.getElementById('cards-col-diag');
-  const repCol = document.getElementById('cards-col-rep');
-  const listoCol = document.getElementById('cards-col-listo');
-  const entregadoCol = document.getElementById('cards-col-entregado');
+  const diagCol = document.getElementById('col-diagnostico');
+  const repCol = document.getElementById('col-reparacion');
+  const listoCol = document.getElementById('col-listo');
+  const entregadoCol = document.getElementById('col-entregado');
 
   if (!diagCol) return;
 
@@ -465,16 +529,10 @@ function renderInventory() {
   const items = appState.Inventario_Refacciones || [];
 
   tbody.innerHTML = items
-    .filter(item => {
-      return (
-        item.Nombre_Pieza.toLowerCase().includes(query) ||
-        (item.Marca && item.Marca.toLowerCase().includes(query)) ||
-        item.Categoria.toLowerCase().includes(query)
-      );
-    })
+    .filter(item => item.Nombre_Pieza.toLowerCase().includes(query) || item.Categoria.toLowerCase().includes(query) || item.Marca.toLowerCase().includes(query))
     .map(item => {
       const stock = Number(item.Stock_Actual) || 0;
-      const min = Number(item.Stock_Minimo) || 0;
+      const min = Number(item.Stock_Minimo) || 2;
       const isLow = stock <= min;
 
       return `
@@ -482,18 +540,18 @@ function renderInventory() {
           <td><span class="order-id-badge">${item.ID_Refaccion}</span></td>
           <td><strong>${item.Nombre_Pieza}</strong></td>
           <td>${item.Categoria}</td>
-          <td>${item.Marca || 'Genérico'}</td>
-          <td><span style="font-size: 0.8rem; color: var(--text-muted);">${item.Ubicacion_Almacen || 'General'}</span></td>
-          <td style="font-weight: 700; font-size: 1rem; color: ${isLow ? 'var(--accent-danger)' : 'var(--text-primary)'};">${stock}</td>
-          <td>$${Number(item.Precio_Costo || 0).toLocaleString('es-MX', { minimumFractionDigits: 2 })}</td>
-          <td style="font-weight: 700; color: var(--accent-success);">$${Number(item.Precio_Venta || 0).toLocaleString('es-MX', { minimumFractionDigits: 2 })}</td>
+          <td>${item.Marca}</td>
           <td>
-            ${isLow ? '<span class="stock-badge-low">🚨 Stock Bajo</span>' : '<span style="color: var(--accent-success); font-size: 0.8rem;">✅ Disponible</span>'}
+            <span class="${isLow ? 'stock-critical' : 'stock-ok'}">
+              ${isLow ? '⚠️ ' : ''}${stock} pza(s)
+            </span>
           </td>
+          <td>$${Number(item.Precio_Venta || 0).toLocaleString('es-MX', { minimumFractionDigits: 2 })}</td>
+          <td><span class="plate-tag">${item.Ubicacion_Almacen || 'Estante'}</span></td>
           <td>
-            <div style="display: flex; gap: 0.35rem;">
-              <button type="button" class="btn btn-secondary btn-icon-only btn-stock-adjust" data-id="${item.ID_Refaccion}" data-delta="-1" title="Restar 1">-</button>
-              <button type="button" class="btn btn-secondary btn-icon-only btn-stock-adjust" data-id="${item.ID_Refaccion}" data-delta="1" title="Sumar 1">+</button>
+            <div style="display: flex; gap: 0.25rem;">
+              <button type="button" class="btn btn-outline btn-stock-adjust" data-id="${item.ID_Refaccion}" data-delta="-1" style="padding: 0.2rem 0.5rem;" title="Disminuir 1 stock">-1</button>
+              <button type="button" class="btn btn-outline btn-stock-adjust" data-id="${item.ID_Refaccion}" data-delta="1" style="padding: 0.2rem 0.5rem;" title="Aumentar 1 stock">+1</button>
             </div>
           </td>
         </tr>
@@ -519,15 +577,16 @@ async function adjustStock(partId, delta) {
   saveLocalCache();
   renderInventory();
 
-  // Persist to Central SQLite Database
+  // Persistir en Base de Datos Central
   try {
     const res = await fetch(`/api/parts/${partId}/adjust-stock`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ delta })
     });
-    if (res.ok) {
-      showToast(`Stock actualizado en BD Central: ${part.Nombre_Pieza} (${newStock})`, 'info');
+    const resJson = await res.json();
+    if (res.ok && resJson.success !== false) {
+      showToast(`✅ Stock guardado en BD: ${part.Nombre_Pieza} (${newStock})`, 'info');
       return;
     }
   } catch (err) {}
@@ -565,18 +624,24 @@ function setupInventoryModule() {
       appState.Inventario_Refacciones.push(newPart);
       saveLocalCache();
       renderInventory();
+      modalPart.classList.remove('open');
+      formPart.reset();
 
       try {
-        await fetch('/api/parts', {
+        const res = await fetch('/api/parts', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(newPart)
         });
-      } catch (err) {}
-
-      modalPart.classList.remove('open');
-      formPart.reset();
-      showToast('Refacción agregada a Base de Datos Central', 'success');
+        const resJson = await res.json();
+        if (res.ok && resJson.success !== false) {
+          showToast('✅ Refacción guardada en Base de Datos Central', 'success');
+        } else {
+          showToast('Refacción guardada localmente', 'warning');
+        }
+      } catch (err) {
+        showToast('Guardada en almacenamiento local', 'warning');
+      }
     });
   }
 }
@@ -629,14 +694,20 @@ function setupServicesModule() {
       renderServices();
 
       try {
-        await fetch('/api/services', {
+        const res = await fetch('/api/services', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(newSrv)
         });
-      } catch (e) {}
-
-      showToast('Servicio guardado en Base de Datos Central', 'success');
+        const resJson = await res.json();
+        if (res.ok && resJson.success !== false) {
+          showToast('✅ Servicio guardado en Base de Datos Central', 'success');
+        } else {
+          showToast('Servicio guardado en almacenamiento local', 'warning');
+        }
+      } catch (e) {
+        showToast('Guardado localmente', 'warning');
+      }
     });
   }
 }
@@ -662,8 +733,8 @@ function renderClients() {
   tbody.innerHTML = clients
     .filter(cli => {
       const cliVehs = vehicles.filter(v => v.ID_Cliente === cli.ID_Cliente);
-      const matchVeh = cliVehs.some(v => v.Placa.toLowerCase().includes(query) || v.Modelo.toLowerCase().includes(query));
-      return cli.Nombre_Completo.toLowerCase().includes(query) || cli.Telefono.toString().includes(query) || matchVeh;
+      const matchVeh = cliVehs.some(v => (v.Placa || '').toLowerCase().includes(query) || (v.Modelo || '').toLowerCase().includes(query));
+      return (cli.Nombre_Completo || '').toLowerCase().includes(query) || (cli.Telefono || '').toString().includes(query) || matchVeh;
     })
     .map(cli => {
       const cliVehs = vehicles.filter(v => v.ID_Cliente === cli.ID_Cliente);
@@ -757,17 +828,24 @@ function setupClientsModule() {
       renderClients();
       populateFormSelects();
 
+      modalClient.classList.remove('open');
+      formClient.reset();
+
       try {
-        await fetch('/api/clients', {
+        const res = await fetch('/api/clients', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(clientData)
         });
-      } catch (err) {}
-
-      modalClient.classList.remove('open');
-      formClient.reset();
-      showToast(`Cliente ${newClient.Nombre_Completo} guardado en BD Central`, 'success');
+        const resJson = await res.json();
+        if (res.ok && resJson.success !== false) {
+          showToast(`✅ Cliente ${newClient.Nombre_Completo} guardado en Base de Datos`, 'success');
+        } else {
+          showToast(`Cliente guardado localmente (${resJson.error || ''})`, 'warning');
+        }
+      } catch (err) {
+        showToast('Guardado en almacenamiento local', 'warning');
+      }
     });
   }
 }
@@ -798,54 +876,51 @@ function setupSignaturePad() {
     sigCtx.strokeStyle = '#0f172a';
   }
 
-  resizeCanvas();
   window.addEventListener('resize', resizeCanvas);
+  setTimeout(resizeCanvas, 300);
 
-  function getCoords(e) {
+  function getPos(e) {
     const rect = sigCanvas.getBoundingClientRect();
-    if (e.touches && e.touches[0]) {
-      return {
-        x: e.touches[0].clientX - rect.left,
-        y: e.touches[0].clientY - rect.top
-      };
-    }
+    const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+    const clientY = e.touches ? e.touches[0].clientY : e.clientY;
     return {
-      x: e.clientX - rect.left,
-      y: e.clientY - rect.top
+      x: clientX - rect.left,
+      y: clientY - rect.top
     };
   }
 
-  function startDraw(e) {
+  function startDrawing(e) {
     isDrawing = true;
     hasSignature = true;
     document.getElementById('sig-hint').style.display = 'none';
-    const { x, y } = getCoords(e);
+    const pos = getPos(e);
     sigCtx.beginPath();
-    sigCtx.moveTo(x, y);
+    sigCtx.moveTo(pos.x, pos.y);
     e.preventDefault();
   }
 
   function draw(e) {
     if (!isDrawing) return;
-    const { x, y } = getCoords(e);
-    sigCtx.lineTo(x, y);
+    const pos = getPos(e);
+    sigCtx.lineTo(pos.x, pos.y);
     sigCtx.stroke();
     e.preventDefault();
   }
 
-  function endDraw() {
+  function stopDrawing() {
     isDrawing = false;
   }
 
-  sigCanvas.addEventListener('mousedown', startDraw);
+  sigCanvas.addEventListener('mousedown', startDrawing);
   sigCanvas.addEventListener('mousemove', draw);
-  window.addEventListener('mouseup', endDraw);
+  sigCanvas.addEventListener('mouseup', stopDrawing);
+  sigCanvas.addEventListener('mouseleave', stopDrawing);
 
-  sigCanvas.addEventListener('touchstart', startDraw, { passive: false });
+  sigCanvas.addEventListener('touchstart', startDrawing, { passive: false });
   sigCanvas.addEventListener('touchmove', draw, { passive: false });
-  sigCanvas.addEventListener('touchend', endDraw);
+  sigCanvas.addEventListener('touchend', stopDrawing);
 
-  document.getElementById('btn-clear-canvas').addEventListener('click', () => {
+  document.getElementById('btn-clear-canvas')?.addEventListener('click', () => {
     sigCtx.clearRect(0, 0, sigCanvas.width, sigCanvas.height);
     hasSignature = false;
     document.getElementById('sig-hint').style.display = 'block';
@@ -876,6 +951,7 @@ function openOrderModal(orderId = null) {
   const modal = document.getElementById('modal-order');
   const form = document.getElementById('form-order');
   const modeTitle = document.getElementById('modal-order-mode');
+  const btnDelete = document.getElementById('btn-delete-order');
   populateFormSelects();
 
   if (sigCtx) {
@@ -887,6 +963,11 @@ function openOrderModal(orderId = null) {
   if (orderId) {
     const order = appState.Ordenes_Trabajo.find(o => o.ID_Orden === orderId);
     if (!order) return;
+
+    if (btnDelete) {
+      btnDelete.style.display = 'inline-block';
+      btnDelete.setAttribute('data-id', order.ID_Orden);
+    }
 
     modeTitle.textContent = `Editar Orden ${order.ID_Orden}`;
     document.getElementById('order-edit-id').value = order.ID_Orden;
@@ -905,6 +986,7 @@ function openOrderModal(orderId = null) {
     document.getElementById('order-anticipo').value = order.Anticipo || 0;
     document.getElementById('order-metodo-pago').value = order.Metodo_Pago || 'Efectivo';
   } else {
+    if (btnDelete) btnDelete.style.display = 'none';
     modeTitle.textContent = 'Nueva Orden de Recepción';
     form.reset();
     document.getElementById('order-edit-id').value = '';
@@ -921,11 +1003,39 @@ function setupOrderModal() {
   const btnOpenHeader = document.getElementById('btn-open-new-order');
   const btnOpenTab = document.getElementById('btn-create-order-tab');
   const form = document.getElementById('form-order');
+  const btnDelete = document.getElementById('btn-delete-order');
 
   if (btnOpenHeader) btnOpenHeader.addEventListener('click', () => openOrderModal());
   if (btnOpenTab) btnOpenTab.addEventListener('click', () => openOrderModal());
   if (btnClose) btnClose.addEventListener('click', () => modal.classList.remove('open'));
   if (btnCancel) btnCancel.addEventListener('click', () => modal.classList.remove('open'));
+
+  // Eliminar orden
+  if (btnDelete) {
+    btnDelete.addEventListener('click', async () => {
+      const orderId = btnDelete.getAttribute('data-id');
+      if (!orderId) return;
+      if (!confirm(`¿Estás seguro de que deseas eliminar permanentemente la orden ${orderId}?`)) return;
+
+      try {
+        const res = await fetch(`/api/orders/${orderId}`, { method: 'DELETE' });
+        const resJson = await res.json();
+        if (res.ok && resJson.success !== false) {
+          showToast(`✅ Orden ${orderId} eliminada de la Base de Datos`, 'success');
+        } else {
+          showToast(`Error al eliminar: ${resJson.error || ''}`, 'warning');
+        }
+      } catch (err) {
+        showToast('Eliminada localmente', 'info');
+      }
+
+      appState.Ordenes_Trabajo = (appState.Ordenes_Trabajo || []).filter(o => o.ID_Orden !== orderId);
+      saveLocalCache();
+      renderOrders();
+      renderDashboard();
+      modal.classList.remove('open');
+    });
+  }
 
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -981,10 +1091,8 @@ function setupOrderModal() {
     if (editId) {
       const idx = appState.Ordenes_Trabajo.findIndex(o => o.ID_Orden === editId);
       if (idx !== -1) appState.Ordenes_Trabajo[idx] = orderPayload;
-      showToast(`Orden ${editId} actualizada`, 'success');
     } else {
       appState.Ordenes_Trabajo.push(orderPayload);
-      showToast(`Nueva orden ${orderPayload.ID_Orden} generada exitosamente`, 'success');
     }
 
     saveLocalCache();
@@ -992,17 +1100,24 @@ function setupOrderModal() {
     renderDashboard();
     modal.classList.remove('open');
 
-    // Persist to Central SQLite Database
+    // Persistir permanentemente en Base de Datos Central
     try {
       const url = editId ? `/api/orders/${editId}` : '/api/orders';
       const method = editId ? 'PUT' : 'POST';
-      await fetch(url, {
+      const res = await fetch(url, {
         method: method,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(orderPayload)
       });
+      const resJson = await res.json();
+      if (res.ok && resJson.success !== false) {
+        showToast(`✅ Guardado permanentemente en Base de Datos (${orderPayload.ID_Orden})`, 'success');
+      } else {
+        showToast(`⚠️ Guardado localmente. Servidor reportó: ${resJson.error || 'Aviso'}`, 'warning');
+      }
     } catch (err) {
       console.warn('Error al guardar en BD central:', err);
+      showToast('⚠️ Guardado en caché local del navegador (Servidor desconectado)', 'warning');
     }
   });
 
@@ -1234,4 +1349,142 @@ function setupGlobalSearch() {
       }
     });
   });
+}
+
+// BACKUP, IMPORT AND DATABASE STATUS MODULE
+function setupBackupAndSyncModule() {
+  // Exportar respaldo JSON
+  const exportBtn = document.getElementById('btn-export-data');
+  if (exportBtn) {
+    exportBtn.addEventListener('click', () => {
+      const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(appState, null, 2));
+      const dlAnchor = document.createElement('a');
+      dlAnchor.setAttribute("href", dataStr);
+      dlAnchor.setAttribute("download", `Respaldo_Autoelectrico_Bribiesca_${new Date().toISOString().slice(0, 10)}.json`);
+      document.body.appendChild(dlAnchor);
+      dlAnchor.click();
+      dlAnchor.remove();
+      showToast('✅ Respaldo JSON descargado correctamente', 'success');
+    });
+  }
+
+  // Importar / Restaurar respaldo JSON
+  const importBtn = document.getElementById('btn-import-data');
+  const fileInput = document.getElementById('file-import-data');
+  if (importBtn && fileInput) {
+    importBtn.addEventListener('click', () => fileInput.click());
+    fileInput.addEventListener('change', (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+
+      const reader = new FileReader();
+      reader.onload = async (event) => {
+        try {
+          const parsed = JSON.parse(event.target.result);
+          if (!parsed.Clientes && !parsed.Ordenes_Trabajo) {
+            showToast('El archivo no parece ser un respaldo válido del sistema', 'error');
+            return;
+          }
+          appState = parsed;
+          saveLocalCache();
+          renderAll();
+
+          // Sincronizar inmediatamente con base de datos del servidor
+          showToast('Sincronizando respaldo con base de datos...', 'info');
+          const res = await fetch('/api/sync-all', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(appState)
+          });
+          const resJson = await res.json();
+          if (res.ok && resJson.success !== false) {
+            showToast('✅ Respaldo restaurado y persistido permanentemente en Base de Datos', 'success');
+          } else {
+            showToast('Respaldo cargado localmente', 'warning');
+          }
+        } catch (err) {
+          showToast('Error al leer el archivo JSON: ' + err.message, 'error');
+        }
+      };
+      reader.readAsText(file);
+      fileInput.value = '';
+    });
+  }
+
+  // Modal Estado de Base de Datos y Persistencia
+  const badge = document.getElementById('db-status-badge');
+  const modalStatus = document.getElementById('modal-db-status');
+  const btnCloseModal = document.getElementById('btn-close-db-status-modal');
+  const btnClose = document.getElementById('btn-close-db-status');
+  const btnForceSync = document.getElementById('btn-force-sync');
+  const statusContent = document.getElementById('db-status-modal-content');
+
+  async function openDbStatusModal() {
+    if (!modalStatus) return;
+    modalStatus.classList.add('open');
+    if (statusContent) {
+      statusContent.innerHTML = '<p>Consultando estado del servidor y persistencia...</p>';
+      try {
+        const res = await fetch('/api/status');
+        if (res.ok) {
+          const s = await res.json();
+          statusContent.innerHTML = `
+            <div style="background: var(--bg-tertiary); padding: 1rem; border-radius: 8px; margin-bottom: 1rem; border: 1px solid var(--border-color);">
+              <div style="font-size: 1.1rem; font-weight: 700; color: ${s.pg_healthy ? '#34d399' : '#38bdf8'}; margin-bottom: 0.5rem;">
+                ${s.pg_healthy ? '🟢' : '📁'} Motor Activo: ${s.active_engine}
+              </div>
+              <p style="margin: 0.25rem 0;"><strong>Tipo Base de Datos:</strong> ${s.database_type}</p>
+              <p style="margin: 0.25rem 0;"><strong>PostgreSQL en la Nube:</strong> ${s.pg_healthy ? '✅ Conectado y Saludable' : '⚠️ No activo (usando SQLite de contingencia)'}</p>
+              <p style="margin: 0.25rem 0;"><strong>Doble Escritura Automática:</strong> ${s.dual_write_enabled ? '✅ Activa (PostgreSQL + SQLite)' : 'Inactiva'}</p>
+              <p style="margin: 0.25rem 0;"><strong>Persistencia Permanente:</strong> ${s.is_persistent ? '✅ Garantizada' : 'Modo memoria'}</p>
+            </div>
+            <h4 style="margin: 0.5rem 0; color: var(--accent-electric);">Registros Persistidos en Base de Datos:</h4>
+            <ul style="margin: 0.5rem 0; padding-left: 1.25rem;">
+              <li>Órdenes de Trabajo: <strong>${s.counts?.orders || 0}</strong></li>
+              <li>Clientes Registrados: <strong>${s.counts?.clients || 0}</strong></li>
+              <li>Vehículos Registrados: <strong>${s.counts?.vehicles || 0}</strong></li>
+              <li>Refacciones en Inventario: <strong>${s.counts?.parts || 0}</strong></li>
+            </ul>
+            <div style="margin-top: 1rem; font-size: 0.8rem; color: var(--text-secondary); background: rgba(56, 189, 248, 0.08); padding: 0.75rem; border-radius: 6px; border-left: 3px solid var(--accent-electric);">
+              💡 <strong>Garantía de Persistencia en Render:</strong> El sistema guarda cada cambio en PostgreSQL y SQLite simultáneamente. Si el contenedor de Render se reinicia, el navegador auto-sincroniza los registros pendientes sin perder información.
+            </div>
+          `;
+        } else {
+          statusContent.innerHTML = '<p style="color: #ef4444;">Error al obtener estado del servidor.</p>';
+        }
+      } catch (e) {
+        statusContent.innerHTML = `<p style="color: #f59e0b;">Servidor no alcanzable en este momento. Los cambios se conservan en tu navegador (${(appState.Ordenes_Trabajo || []).length} órdenes locales).</p>`;
+      }
+    }
+  }
+
+  if (badge) badge.addEventListener('click', openDbStatusModal);
+  if (btnCloseModal) btnCloseModal.addEventListener('click', () => modalStatus.classList.remove('open'));
+  if (btnClose) btnClose.addEventListener('click', () => modalStatus.classList.remove('open'));
+
+  if (btnForceSync) {
+    btnForceSync.addEventListener('click', async () => {
+      btnForceSync.disabled = true;
+      btnForceSync.textContent = 'Sincronizando...';
+      try {
+        const res = await fetch('/api/sync-all', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(appState)
+        });
+        const resJson = await res.json();
+        if (res.ok && resJson.success !== false) {
+          showToast(`✅ Sincronización exitosa: ${resJson.orders_synced} órdenes persistidas`, 'success');
+          openDbStatusModal();
+        } else {
+          showToast('Error al sincronizar: ' + (resJson.error || ''), 'error');
+        }
+      } catch (e) {
+        showToast('Error de red al sincronizar: ' + e.message, 'error');
+      } finally {
+        btnForceSync.disabled = false;
+        btnForceSync.textContent = 'Forzar Sincronización Ahora';
+      }
+    });
+  }
 }

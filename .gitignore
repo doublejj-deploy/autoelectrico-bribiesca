@@ -3,3 +3,6 @@ __pycache__/
 *.pyc
 .system_generated/
 scratch/
+*.db-wal
+*.db-shm
+*.db-journal
