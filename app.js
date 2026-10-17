@@ -177,13 +177,13 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 function renderAll() {
-  updateKPIs();
-  renderDashboard();
-  renderOrders();
-  renderInventory();
-  renderServices();
-  renderClients();
-  populateFormSelects();
+  try { updateKPIs(); } catch (e) { console.error('Error in updateKPIs:', e); }
+  try { renderDashboard(); } catch (e) { console.error('Error in renderDashboard:', e); }
+  try { renderOrders(); } catch (e) { console.error('Error in renderOrders:', e); }
+  try { renderInventory(); } catch (e) { console.error('Error in renderInventory:', e); }
+  try { renderServices(); } catch (e) { console.error('Error in renderServices:', e); }
+  try { renderClients(); } catch (e) { console.error('Error in renderClients:', e); }
+  try { populateFormSelects(); } catch (e) { console.error('Error in populateFormSelects:', e); }
 }
 
 // Navigation Tabs
@@ -253,19 +253,36 @@ function updateKPIs() {
   const orders = appState.Ordenes_Trabajo || [];
   const inventory = appState.Inventario_Refacciones || [];
 
+  // 1. En Taller Hoy (Activos)
   const activeOrders = orders.filter(o => o.Estado !== 'Entregado' && o.Estado !== 'Cancelado');
-  document.getElementById('kpi-active-orders').textContent = activeOrders.length;
+  const activeEl = document.getElementById('kpi-active-val');
+  if (activeEl) activeEl.textContent = activeOrders.length;
 
-  const lowStock = inventory.filter(item => Number(item.Stock_Actual) <= Number(item.Stock_Minimo));
-  document.getElementById('kpi-low-stock').textContent = lowStock.length;
-
-  const monthRevenue = orders
-    .filter(o => o.Estado_Pago === 'Pagado' || o.Estado === 'Entregado')
-    .reduce((sum, o) => sum + (Number(o.Total_General) || 0), 0);
-  document.getElementById('kpi-month-revenue').textContent = `$${monthRevenue.toLocaleString('es-MX', { minimumFractionDigits: 2 })}`;
-
+  // 2. Listos para Entrega
   const readyOrders = orders.filter(o => o.Estado === 'Listo para Entrega');
-  document.getElementById('kpi-ready-orders').textContent = readyOrders.length;
+  const readyEl = document.getElementById('kpi-ready-val');
+  if (readyEl) readyEl.textContent = readyOrders.length;
+
+  // 3. Refacciones Bajas / Críticas
+  const lowStock = inventory.filter(item => Number(item.Stock_Actual) <= Number(item.Stock_Minimo));
+  const stockEl = document.getElementById('kpi-stock-val');
+  if (stockEl) stockEl.textContent = lowStock.length;
+
+  // 4. Saldos por Cobrar Pendientes
+  const pendingBalance = orders
+    .filter(o => o.Estado !== 'Entregado')
+    .reduce((sum, o) => sum + (Number(o.Saldo_Pendiente) || 0), 0);
+  const pendingEl = document.getElementById('kpi-pending-val');
+  if (pendingEl) {
+    pendingEl.textContent = `$${pendingBalance.toLocaleString('es-MX', { minimumFractionDigits: 2 })}`;
+  }
+
+  // Actualizar conteos en badges de las pestañas
+  const badgeOrders = document.getElementById('badge-orders-count');
+  if (badgeOrders) badgeOrders.textContent = orders.length;
+
+  const badgeInventory = document.getElementById('badge-inventory-count');
+  if (badgeInventory) badgeInventory.textContent = inventory.length;
 }
 
 // Helper: Get Client & Vehicle Info
@@ -282,60 +299,40 @@ function getTechnician(techId) {
 
 // DASHBOARD MODULE
 function renderDashboard() {
-  const tbody = document.getElementById('recent-orders-table');
-  if (!tbody) return;
+  const container = document.getElementById('dashboard-recent-orders-container');
+  if (!container) return;
 
-  const orders = [...(appState.Ordenes_Trabajo || [])].reverse().slice(0, 5);
+  const orders = [...(appState.Ordenes_Trabajo || [])].reverse().slice(0, 4);
 
-  tbody.innerHTML = orders.map(order => {
-    const { cliente, vehiculo } = getClientByVehicleId(order.ID_Vehiculo);
-    const tech = getTechnician(order.ID_Tecnico);
-    const vehName = vehiculo ? `${vehiculo.Marca} ${vehiculo.Modelo}` : 'Vehículo no reg.';
-    const placa = vehiculo ? vehiculo.Placa : '---';
-    const cliName = cliente ? cliente.Nombre_Completo : 'Cliente no reg.';
-
-    const statusClass = 
-      order.Estado === 'Recepcionado' ? 'status-recepcionado' :
-      order.Estado === 'En Diagnóstico' ? 'status-diagnostico' :
-      order.Estado === 'En Reparación' ? 'status-reparacion' :
-      order.Estado === 'Listo para Entrega' ? 'status-listo' : 'status-entregado';
-
-    return `
-      <tr>
-        <td><span class="order-id-badge">${order.ID_Orden}</span></td>
-        <td>
-          <strong>${vehName}</strong>
-          <span class="plate-tag" style="margin-left: 0.3rem;">${placa}</span>
-        </td>
-        <td>${cliName}</td>
-        <td>👨‍🔧 ${tech.Nombre_Tecnico.split(' ')[0]}</td>
-        <td><span class="status-pill ${statusClass}">${order.Estado}</span></td>
-        <td style="font-weight: 700; color: var(--accent-electric);">$${Number(order.Total_General || 0).toLocaleString('es-MX', { minimumFractionDigits: 2 })}</td>
-        <td>
-          <button type="button" class="btn btn-outline" style="padding: 0.25rem 0.6rem; font-size: 0.75rem;" onclick="openOrderModal('${order.ID_Orden}')">
-            Abrir
-          </button>
-        </td>
-      </tr>
+  if (orders.length === 0) {
+    container.innerHTML = `
+      <div style="grid-column: 1 / -1; text-align: center; padding: 2rem; color: var(--text-muted); background: var(--bg-secondary); border-radius: 8px;">
+        <p style="font-size: 1.1rem; margin-bottom: 0.5rem;">🚗 No hay órdenes registradas aún</p>
+        <p style="font-size: 0.85rem;">Haz clic en <strong>+ Nueva Orden</strong> arriba para registrar el primer vehículo.</p>
+      </div>
     `;
-  }).join('');
+    return;
+  }
+
+  container.innerHTML = orders.map(order => createOrderCardHtml(order)).join('');
+  attachOrderCardEvents(container);
 }
 
 // ORDERS KANBAN MODULE
 function renderOrders() {
-  const diagCol = document.getElementById('col-diagnostico');
-  const repCol = document.getElementById('col-reparacion');
-  const listoCol = document.getElementById('col-listo');
-  const entregadoCol = document.getElementById('col-entregado');
+  const diagCol = document.getElementById('cards-col-diag');
+  const repCol = document.getElementById('cards-col-rep');
+  const listoCol = document.getElementById('cards-col-listo');
+  const entregadoCol = document.getElementById('cards-col-entregado');
 
-  if (!diagCol) return;
+  if (!diagCol || !repCol || !listoCol || !entregadoCol) return;
 
   diagCol.innerHTML = '';
   repCol.innerHTML = '';
   listoCol.innerHTML = '';
   entregadoCol.innerHTML = '';
 
-  const filterStatus = document.getElementById('filter-order-status').value;
+  const filterStatus = (document.getElementById('filter-order-status')?.value) || 'ALL';
   const orders = appState.Ordenes_Trabajo || [];
 
   let countDiag = 0, countRep = 0, countListo = 0, countEnt = 0;
@@ -360,10 +357,17 @@ function renderOrders() {
     }
   });
 
-  document.getElementById('count-col-diag').textContent = countDiag;
-  document.getElementById('count-col-rep').textContent = countRep;
-  document.getElementById('count-col-listo').textContent = countListo;
-  document.getElementById('count-col-entregado').textContent = countEnt;
+  const cDiag = document.getElementById('count-col-diag');
+  if (cDiag) cDiag.textContent = countDiag;
+
+  const cRep = document.getElementById('count-col-rep');
+  if (cRep) cRep.textContent = countRep;
+
+  const cListo = document.getElementById('count-col-listo');
+  if (cListo) cListo.textContent = countListo;
+
+  const cEnt = document.getElementById('count-col-entregado');
+  if (cEnt) cEnt.textContent = countEnt;
 
   attachOrderCardEvents(document.getElementById('orders-kanban-board'));
 }
