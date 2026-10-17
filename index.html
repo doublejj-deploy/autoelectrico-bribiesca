@@ -55,6 +55,11 @@
         <button type="button" class="btn btn-secondary btn-icon-only" id="btn-export-data" title="Exportar Respaldo JSON" aria-label="Respaldar datos">
           <span aria-hidden="true">💾</span>
         </button>
+
+        <button type="button" class="btn btn-secondary btn-icon-only" id="btn-import-data" title="Restaurar / Importar Respaldo JSON" aria-label="Restaurar datos">
+          <span aria-hidden="true">📥</span>
+        </button>
+        <input type="file" id="file-import-data" accept=".json" style="display: none;">
       </div>
     </header>
 
@@ -704,6 +709,29 @@
     </div>
   </div>
 
+
+  <!-- ==========================================
+       MODAL 5: ESTADO DE BASE DE DATOS Y PERSISTENCIA
+       ========================================== -->
+  <div class="modal-overlay" id="modal-db-status" role="dialog" aria-modal="true" aria-labelledby="db-status-title">
+    <div class="modal-content" style="max-width: 580px;">
+      <div class="modal-header">
+        <h2 class="modal-title" id="db-status-title">
+          <span>🗄️</span> Base de Datos y Persistencia
+        </h2>
+        <button type="button" class="modal-close-btn" id="btn-close-db-status-modal">&times;</button>
+      </div>
+      <div class="modal-body" style="font-size: 0.9rem; line-height: 1.6;">
+        <div id="db-status-modal-content">
+          <!-- Dynamically filled -->
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" id="btn-close-db-status">Cerrar</button>
+        <button type="button" class="btn btn-primary" id="btn-force-sync">Forzar Sincronización Ahora</button>
+      </div>
+    </div>
+  </div>
 
   <!-- Toast Notifications Container -->
   <div class="toast-container" id="toast-container" aria-live="polite"></div>

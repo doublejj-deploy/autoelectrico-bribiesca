@@ -8,3 +8,11 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.9.6
+      - key: DATABASE_URL
+        fromDatabase:
+          name: autoelectrico-bribiesca-db
+          property: connectionString
+
+databases:
+  - name: autoelectrico-bribiesca-db
+    plan: free
