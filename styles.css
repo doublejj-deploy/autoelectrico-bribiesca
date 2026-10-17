@@ -113,12 +113,15 @@ body {
 }
 
 .brand-logo-img {
-  width: 44px;
+  /* Fixed logo size with responsive containment */
   height: 44px;
+  width: auto;
+  max-width: 76px;
   border-radius: var(--radius-sm);
-  object-fit: cover;
+  object-fit: contain;
+  /* subtle border/glow to match theme */
   border: 2px solid var(--accent-electric);
-  box-shadow: 0 0 10px var(--accent-electric-glow);
+  box-shadow: 0 0 8px var(--accent-electric-glow);
 }
 
 .brand-text h1 {

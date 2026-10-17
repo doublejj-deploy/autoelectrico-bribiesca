@@ -648,17 +648,37 @@ class DatabaseManager:
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", params)
         return pid
 
-    def upsert_order(self, data):
-        oid = safe_str(data.get('ID_Orden') or data.get('id_orden'))
-        if not oid:
-            count_row = self.fetch_one("SELECT COUNT(*) AS c FROM ordenes_trabajo")
-            cnt = (count_row.get('c') if count_row else 0) + 1
-            oid = f"ORD-{str(cnt).zfill(3)}"
-
+    def upsert_config(self, data):
+        # Upsert a single row in configuracion_taller (always only one row expected)
+        cfg_id = safe_str(data.get('ID_Config') or data.get('id_config')) or 'CFG-001'
+        # Prepare fields (use defaults if missing)
         params = (
-            safe_str(data.get('ID_Vehiculo') or data.get('id_vehiculo')),
-            safe_str(data.get('ID_Tecnico') or data.get('id_tecnico')),
-            safe_str(data.get('Fecha_Ingreso') or data.get('fecha_ingreso')),
+            cfg_id,
+            data.get('Nombre_Taller', ''),
+            data.get('Eslogan', ''),
+            data.get('Telefono_Principal', ''),
+            data.get('WhatsApp_Notificaciones', ''),
+            data.get('Email_Contacto', ''),
+            data.get('Direccion_Taller', ''),
+            data.get('Horario_Atencion', ''),
+            data.get('Logo_URL', ''),
+            data.get('Terminos_Garantia', ''),
+        )
+        # Upsert logic – if exists update else insert
+        existing = self.fetch_one("SELECT 1 FROM configuracion_taller WHERE id_config = ?", (cfg_id,))
+        if existing:
+            self.execute("""UPDATE configuracion_taller SET
+                nombre_taller = ?, eslogan = ?, telefono_principal = ?, whatsapp_notificaciones = ?,
+                email_contacto = ?, direccion_taller = ?, horario_atencion = ?, logo_url = ?, terminos_garantia = ?
+                WHERE id_config = ?""",
+                params + (cfg_id,))
+        else:
+            self.execute("""INSERT INTO configuracion_taller (
+                id_config, nombre_taller, eslogan, telefono_principal, whatsapp_notificaciones,
+                email_contacto, direccion_taller, horario_atencion, logo_url, terminos_garantia)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                params)
+        return cfg_id            safe_str(data.get('Fecha_Ingreso') or data.get('fecha_ingreso')),
             safe_str(data.get('Fecha_Entrega_Estimada') or data.get('fecha_entrega_estimada')),
             safe_str(data.get('Fecha_Entrega_Real') or data.get('fecha_entrega_real')),
             safe_str(data.get('Estado') or data.get('estado'), 'Recepcionado'),
@@ -844,6 +864,10 @@ class CentralDatabaseHandler(http.server.BaseHTTPRequestHandler):
 
         if path == '/api/sync-all':
             self.handle_sync_all(body)
+            return
+
+        if path == '/api/config':
+            self.handle_save_config(body)
             return
 
         self.send_json({'error': 'Endpoint POST no encontrado'}, 404)

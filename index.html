@@ -83,10 +83,56 @@
       <button type="button" class="tab-btn" data-tab="diagnostics" id="tab-diagnostics">
         <span aria-hidden="true">🔬</span> Asistente Eléctrico
       </button>
+      <button type="button" class="tab-btn" data-tab="config" id="tab-config">
+        <span aria-hidden="true">⚙️</span> Configuración Taller
+      </button>
     </nav>
 
     <!-- Main Content Area -->
     <main class="main-content" role="main">
+      <!-- Workshop Configuration Section -->
+      <section id="view-config" class="view-section">
+        <h2 class="section-title"><span aria-hidden="true">⚙️</span> Configuración del Taller</h2>
+        <form id="form-workshop-config" class="config-form" style="max-width: 800px; margin: auto; display: grid; gap: 1rem;">
+          <label>
+            Nombre del Taller
+            <input type="text" id="cfg-nombre" name="Nombre_Taller" class="form-control" required />
+          </label>
+          <label>
+            Slogan
+            <input type="text" id="cfg-slogan" name="Slogan" class="form-control" />
+          </label>
+          <label>
+            Teléfono Principal
+            <input type="tel" id="cfg-telefono" name="Telefono_Principal" class="form-control" />
+          </label>
+          <label>
+            WhatsApp Empresa
+            <input type="tel" id="cfg-whatsapp" name="WhatsApp_Empresa" class="form-control" />
+          </label>
+          <label>
+            Email Empresa
+            <input type="email" id="cfg-email" name="Email_Empresa" class="form-control" />
+          </label>
+          <label>
+            Dirección del Taller
+            <input type="text" id="cfg-direccion" name="Direccion_Taller" class="form-control" />
+          </label>
+          <label>
+            Horario del Taller
+            <input type="text" id="cfg-horario" name="Horario_Taller" class="form-control" placeholder="Lun-Vie 8:00-18:00" />
+          </label>
+          <label>
+            URL del Logo (imagen)
+            <input type="url" id="cfg-logo" name="Logo_URL" class="form-control" />
+          </label>
+          <label>
+            Términos de Garantía
+            <textarea id="cfg-terminos" name="Terminos_Garantia" class="form-control" rows="3"></textarea>
+          </label>
+          <button type="submit" class="btn btn-primary">Guardar Cambios</button>
+        </form>
+      </section>
 
       <!-- ==========================================
            TAB 1: DASHBOARD
